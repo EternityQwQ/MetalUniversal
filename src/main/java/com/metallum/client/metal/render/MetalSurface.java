@@ -160,13 +160,19 @@ final class MetalSurface implements GpuSurfaceBackend {
 
         int targetWidth = this.displayWidth;
         int targetHeight = this.displayHeight;
-        if (mode != MetalFxConfig.SpatialMode.OFF && fxConfig.isSpatialUpscalingActive()) {
+        // Temporal upscaling reuses the spatial mode's render scale to shrink
+        // the internal resolution — it produces a higher-quality result than
+        // spatial but still needs sourceWidth != outputWidth to be useful.
+        boolean upscalingActive = fxConfig.isSpatialUpscalingActive()
+                || fxConfig.isTemporalUpscalingActive();
+        if (mode != MetalFxConfig.SpatialMode.OFF && upscalingActive) {
             float scale = mode.renderScale;
             targetWidth = Math.max(1, Math.round(this.displayWidth * scale));
             targetHeight = Math.max(1, Math.round(this.displayHeight * scale));
+            String modeLabel = fxConfig.isTemporalUpscalingActive() ? "temporal" : "spatial";
             Metallum.LOGGER.info(
-                    "[MetalFX] spatial upscaling active: mode={} renderScale={} internal={}x{} display={}x{}",
-                    mode, scale, targetWidth, targetHeight, this.displayWidth, this.displayHeight);
+                    "[MetalFX] {} upscaling active: spatialMode={} renderScale={} internal={}x{} display={}x{}",
+                    modeLabel, mode, scale, targetWidth, targetHeight, this.displayWidth, this.displayHeight);
         }
 
         this.internalWidth = targetWidth;

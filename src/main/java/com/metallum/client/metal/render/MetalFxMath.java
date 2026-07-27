@@ -19,7 +19,7 @@ import org.joml.Vector2fc;
  * "no MC types" invariant of this class.
  */
 @Environment(EnvType.CLIENT)
-final class MetalFxMath {
+public final class MetalFxMath {
     /**
      * Scene-cut distance threshold (in blocks). A camera displacement larger
      * than this between two frames is treated as a teleport and forces a
@@ -89,7 +89,7 @@ final class MetalFxMath {
      * {@code [-0.5, 0.5)}. The jitter is in render-resolution pixels and is
      * passed unchanged to MetalFX.
      */
-    static Vector2f pixelJitter(final int phase, final int phaseCount) {
+    public static Vector2f pixelJitter(final int phase, final int phaseCount) {
         int p = ((phase % phaseCount) + phaseCount) % phaseCount;
         // Shift to 1-based so phase 0 maps to the first Halton sample.
         int oneBased = p + 1;
@@ -137,7 +137,7 @@ final class MetalFxMath {
      * {@link MetalMotionContract#motionVectorScale} so the contract has a
      * single source of truth.
      */
-    static Vector2f motionVectorScale(final int inputWidth, final int inputHeight) {
+    public static Vector2f motionVectorScale(final int inputWidth, final int inputHeight) {
         return MetalMotionContract.motionVectorScale(inputWidth, inputHeight);
     }
 

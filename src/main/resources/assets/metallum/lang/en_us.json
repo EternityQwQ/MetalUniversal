@@ -6,6 +6,7 @@
   "metallum.fx.options.header": "Apple MetalFX Upscaling & Frame Interpolation",
 
   "metallum.fx.options.spatial": "Spatial Upscaling",
+  "metallum.fx.options.temporal": "Temporal Upscaling",
   "metallum.fx.options.frame_interpolation": "Frame Interpolation",
 
   "metallum.fx.spatial.off": "Off",
@@ -14,12 +15,16 @@
   "metallum.fx.spatial.performance": "Performance (56%)",
   "metallum.fx.spatial.ultra_performance": "Ultra Performance (33%)",
 
+  "metallum.fx.temporal.off": "Off",
+  "metallum.fx.temporal.auto": "Auto (Temporal)",
+
   "metallum.fx.interp.off": "Off",
   "metallum.fx.interp.auto": "Auto (Hardware)",
   "metallum.fx.interp.force_blend": "Auto (Hardware)",
 
   "metallum.fx.capability.device": "Device: %s",
   "metallum.fx.capability.spatial": "Spatial Scaler: %s",
+  "metallum.fx.capability.temporal": "Temporal Scaler: %s",
   "metallum.fx.capability.interpolation": "Frame Interpolator: %s",
   "metallum.fx.capability.supported": "Supported",
   "metallum.fx.capability.not_supported": "Not Supported",
@@ -29,7 +34,7 @@
   "metallum.fx.warning.title": "MetalFX Compatibility Warning",
   "metallum.fx.warning.header": "Please confirm your device meets Apple's official MetalFX requirements:",
   "metallum.fx.warning.spatial.line": "Spatial Scaler: macOS 13.0+ / iOS 16.0+, Apple GPU family 7+ (M1 / A14 or newer)",
-  "metallum.fx.warning.temporal.line": "Temporal Scaler: macOS 14.0+ / iOS 17.0+",
+  "metallum.fx.warning.temporal.line": "Temporal Scaler: macOS 13.0+ / iOS 16.0+, Apple GPU family 7+ (M1 / A14 or newer)",
   "metallum.fx.warning.interp.line": "Frame Interpolator: macOS 14.0+ / iOS 17.0+, hardware path requires Apple GPU family 9 (M3 / A17 Pro or newer)",
   "metallum.fx.warning.note": "Enabling MetalFX on unsupported devices may cause visual artifacts, performance loss, or crashes.",
   "metallum.fx.warning.enable": "Enable MetalFX",

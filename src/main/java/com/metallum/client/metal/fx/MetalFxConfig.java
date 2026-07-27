@@ -73,15 +73,40 @@ public final class MetalFxConfig {
         FORCE_BLEND
     }
 
+    /**
+     * Temporal upscaling mode. When active, replaces the spatial scaler
+     * with {@code MTLFXTemporalScaler}, which uses temporal history +
+     * motion vectors to produce a higher-quality upscale than the
+     * single-frame spatial path.
+     *
+     * <p>Requires macOS 13.0+ / iOS 16.0+ (Apple Silicon M1+ / A14+).
+     * When the device does not support the temporal scaler, the option
+     * silently falls back to the spatial scaler selected by
+     * {@link #spatialMode}.
+     *
+     * <p>The motion-vector texture is currently zero-filled (no per-entity
+     * motion capture pipeline is wired in yet), so the temporal scaler
+     * relies on its internal optical-flow estimate. This still produces
+     * noticeably better temporal stability than the spatial scaler on
+     * static and slowly-moving scenes, and never regresses baseline
+     * behaviour because the spatial fallback remains available.
+     */
+    public enum TemporalUpscalingMode {
+        OFF,
+        AUTO
+    }
+
     private static final String CONFIG_FILE_NAME = "metallum_fx.properties";
     private static final String KEY_SPATIAL = "spatialUpscaling";
     private static final String KEY_INTERP = "frameInterpolation";
+    private static final String KEY_TEMPORAL = "temporalUpscaling";
     private static final String KEY_ACKNOWLEDGED = "acknowledged";
 
     private static volatile MetalFxConfig INSTANCE = new MetalFxConfig();
 
     private volatile SpatialMode spatialMode = SpatialMode.OFF;
     private volatile FrameInterpolationMode interpolationMode = FrameInterpolationMode.OFF;
+    private volatile TemporalUpscalingMode temporalMode = TemporalUpscalingMode.OFF;
     /**
      * Whether the user has acknowledged the MetalFX warning dialog at least
      * once. Persisted so the warning only shows the first time the user
@@ -90,6 +115,7 @@ public final class MetalFxConfig {
     private volatile boolean acknowledged = false;
     private volatile boolean deviceCapabilitiesQueried = false;
     private volatile boolean spatialSupported = false;
+    private volatile boolean temporalSupported = false;
     private volatile boolean interpolationSupported = false;
     private volatile boolean blendSupported = false;
     private volatile String deviceName = "<unknown>";
@@ -109,6 +135,10 @@ public final class MetalFxConfig {
         return interpolationMode;
     }
 
+    public TemporalUpscalingMode temporalMode() {
+        return temporalMode;
+    }
+
     public boolean acknowledged() {
         return acknowledged;
     }
@@ -125,12 +155,30 @@ public final class MetalFxConfig {
         this.interpolationMode = mode;
     }
 
+    public void setTemporalMode(TemporalUpscalingMode mode) {
+        this.temporalMode = mode;
+    }
+
     /**
      * @return {@code true} if the active spatial mode is enabled <em>and</em>
      * the current device supports {@code MTLFXSpatialScaler}.
      */
     public boolean isSpatialUpscalingActive() {
         return spatialMode.isEnabled() && spatialSupported;
+    }
+
+    /**
+     * @return {@code true} if temporal upscaling is enabled <em>and</em> the
+     * device supports {@code MTLFXTemporalScaler} <em>and</em> a spatial
+     * mode is active (temporal upscaling replaces — does not stack on —
+     * spatial upscaling, so it needs the same render-scale shrink to be
+     * meaningful). When this returns {@code false}, the present path uses
+     * the spatial scaler (if active) or the source texture directly.
+     */
+    public boolean isTemporalUpscalingActive() {
+        return temporalMode == TemporalUpscalingMode.AUTO
+                && temporalSupported
+                && spatialMode.isEnabled();
     }
 
     /**
@@ -169,6 +217,10 @@ public final class MetalFxConfig {
         return spatialSupported;
     }
 
+    public boolean temporalSupported() {
+        return temporalSupported;
+    }
+
     public boolean interpolationSupported() {
         return interpolationSupported;
     }
@@ -203,17 +255,19 @@ public final class MetalFxConfig {
             try {
                 deviceName = com.metallum.client.metal.render.bridge.MetalNativeBridge.metallum_copy_device_name(deviceHandle);
                 spatialSupported = com.metallum.client.metal.render.bridge.MetalNativeBridge.metallum_fx_supports_spatial_scaler(deviceHandle);
+                temporalSupported = com.metallum.client.metal.render.bridge.MetalNativeBridge.metallum_fx_supports_temporal_scaler(deviceHandle);
                 interpolationSupported = com.metallum.client.metal.render.bridge.MetalNativeBridge.metallum_fx_supports_frame_interpolation(deviceHandle);
                 // The frame-blend fallback is a pure Metal compute path —
                 // available on every Metal device we support. The only
                 // failure mode is shader compilation, which is rare.
                 blendSupported = true;
                 Metallum.LOGGER.info(
-                        "[MetalFX] device='{}' spatial={} interpolation={} blend={}",
-                        deviceName, spatialSupported, interpolationSupported, blendSupported);
+                        "[MetalFX] device='{}' spatial={} temporal={} interpolation={} blend={}",
+                        deviceName, spatialSupported, temporalSupported, interpolationSupported, blendSupported);
             } catch (Throwable t) {
                 Metallum.LOGGER.warn("[MetalFX] Failed to query device capabilities; MetalFX disabled", t);
                 spatialSupported = false;
+                temporalSupported = false;
                 interpolationSupported = false;
                 blendSupported = false;
             } finally {
@@ -238,6 +292,7 @@ public final class MetalFxConfig {
             }
             cfg.spatialMode = parseEnum(props.getProperty(KEY_SPATIAL), SpatialMode.OFF, SpatialMode.class);
             cfg.interpolationMode = parseEnum(props.getProperty(KEY_INTERP), FrameInterpolationMode.OFF, FrameInterpolationMode.class);
+            cfg.temporalMode = parseEnum(props.getProperty(KEY_TEMPORAL), TemporalUpscalingMode.OFF, TemporalUpscalingMode.class);
             cfg.acknowledged = Boolean.parseBoolean(props.getProperty(KEY_ACKNOWLEDGED, "false"));
         }
         // Preserve previously-queried device capabilities across reloads so
@@ -246,6 +301,7 @@ public final class MetalFxConfig {
         MetalFxConfig prev = INSTANCE;
         cfg.deviceCapabilitiesQueried = prev.deviceCapabilitiesQueried;
         cfg.spatialSupported = prev.spatialSupported;
+        cfg.temporalSupported = prev.temporalSupported;
         cfg.interpolationSupported = prev.interpolationSupported;
         cfg.blendSupported = prev.blendSupported;
         cfg.deviceName = prev.deviceName;
@@ -262,6 +318,7 @@ public final class MetalFxConfig {
         Properties props = new Properties();
         props.setProperty(KEY_SPATIAL, cfg.spatialMode.name());
         props.setProperty(KEY_INTERP, cfg.interpolationMode.name());
+        props.setProperty(KEY_TEMPORAL, cfg.temporalMode.name());
         props.setProperty(KEY_ACKNOWLEDGED, Boolean.toString(cfg.acknowledged));
         Path configPath = configPath();
         try {

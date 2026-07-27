@@ -257,7 +257,9 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         // interpolated texture that the present path blits to the drawable.
         MemorySegment presentTexture = source.nativeHandle();
         com.metallum.client.metal.fx.MetalFxConfig fxConfig = com.metallum.client.metal.fx.MetalFxConfig.get();
-        if ((fxConfig.isSpatialUpscalingActive() || fxConfig.isFrameInterpolationActive())
+        if ((fxConfig.isSpatialUpscalingActive()
+                || fxConfig.isTemporalUpscalingActive()
+                || fxConfig.isFrameInterpolationActive())
                 && outputWidth > 0 && outputHeight > 0) {
             try {
                 presentTexture = device.metalFxPipeline().maybeEncode(

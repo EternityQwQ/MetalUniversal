@@ -55,6 +55,8 @@ public final class MetalFxPipeline {
     @Nullable
     private MemorySegment spatialScaler = null;
     @Nullable
+    private MemorySegment temporalScaler = null;
+    @Nullable
     private MemorySegment frameInterpolator = null;
 
     // Intermediate textures. Recreated when the resolution changes. Each
@@ -68,6 +70,16 @@ public final class MetalFxPipeline {
     private MemorySegment interpolationOutputTexture = null;
     @Nullable
     private MemorySegment motionVectorTexture = null;
+    // Separate motion texture for the temporal scaler, which requires
+    // source-resolution motion vectors (inputWidth x inputHeight). The
+    // frame interpolator above uses output-resolution motion vectors
+    // (outputWidth x outputHeight). Sharing one texture between the two
+    // would force a recreate every frame when both features are active,
+    // so each path owns its own. Both are zero-filled — no per-entity
+    // motion is wired in yet — so MetalFX falls back to its internal
+    // optical-flow estimate.
+    @Nullable
+    private MemorySegment temporalMotionTexture = null;
 
     // Tracked dimensions so we only recreate textures/handles when they change.
     private int cachedInputWidth = -1;
@@ -82,7 +94,25 @@ public final class MetalFxPipeline {
     private int cachedUpscaledHeight = -1;
     private boolean previousFrameValid = false;
     private boolean loggedSpatialActive = false;
+    private boolean loggedTemporalActive = false;
     private boolean loggedInterpActive = false;
+    // Motion-vector texture has its own dimension cache because it is shared
+    // between the temporal scaler (which wants source-resolution motion) and
+    // the frame interpolator (which wants output-resolution motion). When
+    // both are active we keep the larger of the two so neither path reads
+    // out-of-bounds. Tracked separately from cachedInputWidth/Height and
+    // cachedOutputWidth/Height so resizing one path does not spuriously
+    // invalidate the other.
+    private int cachedMotionWidth = -1;
+    private int cachedMotionHeight = -1;
+    // Temporal motion texture dimensions (source resolution, distinct from
+    // the interpolator's output-resolution motion texture above).
+    private int cachedTemporalMotionWidth = -1;
+    private int cachedTemporalMotionHeight = -1;
+    // Tracks whether the temporal motion texture has been zeroed. Independent
+    // from motionVectorCleared (which tracks the interpolator's texture)
+    // because the two textures have different lifetimes.
+    private boolean temporalMotionCleared = false;
     // Tracks whether the motion-vector texture has been zeroed. Private-storage
     // textures start with undefined contents; feeding garbage RG32Float motion
     // vectors into MTLFXFrameInterpolator crashes the encoder on stricter
@@ -93,6 +123,14 @@ public final class MetalFxPipeline {
     // its internal history from the provided color+previous pair rather than
     // reading stale/uninitialised history.
     private boolean firstInterpFrame = true;
+    // True until the first successful temporal scaler encode completes. The
+    // first encode must pass reset=1 so the scaler seeds its internal history
+    // from the provided color frame instead of reading uninitialised history.
+    private boolean firstTemporalFrame = true;
+    // Halton jitter phase counter for the temporal scaler. Advances each
+    // frame to provide sub-pixel sampling diversity that the temporal
+    // reconstruction uses to recover detail beyond the render resolution.
+    private int temporalJitterPhase = 0;
 
     // BGRA8Unorm is the format CAMetalLayer drawables use on Apple platforms;
     // the present pipeline in MetallumNative.swift is hardwired to it.
@@ -139,39 +177,104 @@ public final class MetalFxPipeline {
         MetalFxConfig cfg = MetalFxConfig.get();
         MemorySegment currentFrame = sourceTexture;
 
-        // ---- Stage 1: spatial upscale -------------------------------------
-        // This branch now actually fires because MetalSurface shrinks the
-        // internal resolution reported to Minecraft, so sourceWidth <
-        // outputWidth when spatial upscaling is active.
-        if (cfg.isSpatialUpscalingActive()
+        // ---- Stage 1: upscaling (temporal OR spatial) --------------------
+        // Temporal upscaling replaces spatial upscaling when enabled: it
+        // produces a higher-quality result by integrating information across
+        // frames. When temporal is off or unsupported, we fall back to the
+        // spatial scaler. Both paths require sourceWidth != outputWidth
+        // (guaranteed by MetalSurface shrinking the internal resolution).
+        boolean needsUpscale = (cfg.isSpatialUpscalingActive() || cfg.isTemporalUpscalingActive())
                 && sourceWidth > 0 && sourceHeight > 0
                 && outputWidth > 0 && outputHeight > 0
-                && (sourceWidth != outputWidth || sourceHeight != outputHeight)) {
-            ensureSpatialScaler(sourceWidth, sourceHeight, outputWidth, outputHeight);
+                && (sourceWidth != outputWidth || sourceHeight != outputHeight);
+
+        if (needsUpscale) {
             ensureUpscaledTexture(outputWidth, outputHeight);
-            if (spatialScaler != null && upscaledColorTexture != null) {
-                try {
-                    MetalNativeBridge.metallum_fx_spatial_scaler_encode(
-                            spatialScaler,
-                            commandBuffer,
-                            sourceTexture,
-                            upscaledColorTexture,
-                            0.0f, 0.0f, 1.0f
-                    );
-                    currentFrame = upscaledColorTexture;
-                    if (!loggedSpatialActive) {
-                        Metallum.LOGGER.info(
-                                "[MetalFX] spatial scaler RUNNING: {}x{} -> {}x{} (mode={})",
-                                sourceWidth, sourceHeight, outputWidth, outputHeight, cfg.spatialMode());
-                        loggedSpatialActive = true;
+            if (cfg.isTemporalUpscalingActive()) {
+                // Temporal path: uses motion vectors + Halton jitter + history.
+                // Falls back to spatial on any failure.
+                ensureTemporalScaler(sourceWidth, sourceHeight, outputWidth, outputHeight);
+                ensureTemporalMotionTexture(sourceWidth, sourceHeight);
+                if (temporalScaler != null && upscaledColorTexture != null) {
+                    try {
+                        if (!temporalMotionCleared && temporalMotionTexture != null) {
+                            // metallum_fx_clear_texture returns false if the
+                            // render-command-encoder creation failed (e.g.
+                            // texture lacks RenderTarget usage). On failure we
+                            // leave temporalMotionCleared=false so the next
+                            // frame retries; we do NOT abort the temporal
+                            // encode, because the scaler tolerates a zero
+                            // motion texture on its first frame (reset=1).
+                            try {
+                                if (MetalNativeBridge.metallum_fx_clear_texture(
+                                        commandBuffer, temporalMotionTexture)) {
+                                    temporalMotionCleared = true;
+                                } else {
+                                    Metallum.LOGGER.warn(
+                                            "[MetalFX] temporal motion clear returned 0; will retry next frame");
+                                }
+                            } catch (Throwable clearErr) {
+                                Metallum.LOGGER.warn(
+                                        "[MetalFX] failed to clear temporal motion texture", clearErr);
+                            }
+                        }
+                        // Halton jitter in render-resolution pixels. The
+                        // temporal scaler integrates this sub-pixel offset
+                        // across frames to recover detail beyond the render
+                        // resolution. Phase advances every frame.
+                        float phaseCount = 8.0f; // conservative default
+                        org.joml.Vector2f jitter = com.metallum.client.metal.render.MetalFxMath
+                                .pixelJitter(temporalJitterPhase, (int) phaseCount);
+                        org.joml.Vector2f mvScale = com.metallum.client.metal.render.MetalFxMath
+                                .motionVectorScale(sourceWidth, sourceHeight);
+                        int reset = firstTemporalFrame ? 1 : 0;
+                        MetalNativeBridge.metallum_fx_temporal_scaler_encode(
+                                temporalScaler,
+                                commandBuffer,
+                                sourceTexture,
+                                MemorySegment.NULL, // prevColor: scaler manages history internally
+                                temporalMotionTexture != null ? temporalMotionTexture : MemorySegment.NULL,
+                                MemorySegment.NULL, // depth: not wired in yet (optional)
+                                upscaledColorTexture,
+                                jitter.x(), jitter.y(),
+                                mvScale.x(), mvScale.y(),
+                                reset
+                        );
+                        currentFrame = upscaledColorTexture;
+                        firstTemporalFrame = false;
+                        temporalJitterPhase++;
+                        if (!loggedTemporalActive) {
+                            Metallum.LOGGER.info(
+                                    "[MetalFX] temporal scaler RUNNING: {}x{} -> {}x{} (mode={})",
+                                    sourceWidth, sourceHeight, outputWidth, outputHeight, cfg.spatialMode());
+                            loggedTemporalActive = true;
+                        }
+                    } catch (Throwable t) {
+                        Metallum.LOGGER.warn("[MetalFX] temporal scaler encode failed; falling back to spatial", t);
+                        currentFrame = encodeSpatialFallback(commandBuffer, sourceTexture,
+                                sourceWidth, sourceHeight, outputWidth, outputHeight, cfg);
                     }
-                } catch (Throwable t) {
-                    Metallum.LOGGER.warn("[MetalFX] spatial scaler encode failed; falling back to source", t);
-                    currentFrame = sourceTexture;
+                } else {
+                    currentFrame = encodeSpatialFallback(commandBuffer, sourceTexture,
+                            sourceWidth, sourceHeight, outputWidth, outputHeight, cfg);
                 }
+            } else {
+                // Spatial path (default when temporal is off).
+                currentFrame = encodeSpatialFallback(commandBuffer, sourceTexture,
+                        sourceWidth, sourceHeight, outputWidth, outputHeight, cfg);
             }
-        } else if (loggedSpatialActive && !cfg.isSpatialUpscalingActive()) {
-            loggedSpatialActive = false;
+        } else {
+            if (loggedSpatialActive && !cfg.isSpatialUpscalingActive()) {
+                loggedSpatialActive = false;
+            }
+            if (loggedTemporalActive && !cfg.isTemporalUpscalingActive()) {
+                loggedTemporalActive = false;
+                firstTemporalFrame = true;
+                temporalJitterPhase = 0;
+                // Force re-clear of the temporal motion texture on next use,
+                // since it may have been sitting idle with stale contents.
+                temporalMotionCleared = false;
+            }
         }
 
         // ---- Stage 2: hardware frame interpolation ------------------------
@@ -200,10 +303,21 @@ public final class MetalFxPipeline {
                     // the interpolator (we never write new motion vectors), so
                     // a single clear keeps it zero for its lifetime.
                     if (!motionVectorCleared && motionVectorTexture != null) {
+                        // Match the temporal path: check the return value so a
+                        // failed clear (e.g. encoder creation failure) leaves
+                        // motionVectorCleared=false and retries next frame.
+                        // Marking it cleared on failure would feed garbage
+                        // RG32Float motion vectors to the interpolator on the
+                        // next encode — the exact crash this clear exists to
+                        // prevent on stricter drivers (M5 Max).
                         try {
-                            MetalNativeBridge.metallum_fx_clear_texture(
-                                    commandBuffer, motionVectorTexture);
-                            motionVectorCleared = true;
+                            if (MetalNativeBridge.metallum_fx_clear_texture(
+                                    commandBuffer, motionVectorTexture)) {
+                                motionVectorCleared = true;
+                            } else {
+                                Metallum.LOGGER.warn(
+                                        "[MetalFX] motion vector clear returned 0; will retry next frame");
+                            }
                         } catch (Throwable t) {
                             Metallum.LOGGER.warn("[MetalFX] failed to clear motion vector texture", t);
                         }
@@ -294,6 +408,85 @@ public final class MetalFxPipeline {
         return currentFrame;
     }
 
+    /**
+     * Encodes the spatial scaler as a fallback when temporal upscaling is
+     * disabled or failed. Extracted from the original inline path so the
+     * temporal branch can reuse it without duplicating the
+     * ensureSpatialScaler + encode + logging logic.
+     */
+    private MemorySegment encodeSpatialFallback(
+            final MemorySegment commandBuffer,
+            final MemorySegment sourceTexture,
+            final int sourceWidth, final int sourceHeight,
+            final int outputWidth, final int outputHeight,
+            final MetalFxConfig cfg
+    ) {
+        ensureSpatialScaler(sourceWidth, sourceHeight, outputWidth, outputHeight);
+        if (spatialScaler != null && upscaledColorTexture != null) {
+            try {
+                MetalNativeBridge.metallum_fx_spatial_scaler_encode(
+                        spatialScaler,
+                        commandBuffer,
+                        sourceTexture,
+                        upscaledColorTexture,
+                        0.0f, 0.0f, 1.0f
+                );
+                if (!loggedSpatialActive) {
+                    Metallum.LOGGER.info(
+                            "[MetalFX] spatial scaler RUNNING: {}x{} -> {}x{} (mode={})",
+                            sourceWidth, sourceHeight, outputWidth, outputHeight, cfg.spatialMode());
+                    loggedSpatialActive = true;
+                }
+                return upscaledColorTexture;
+            } catch (Throwable t) {
+                Metallum.LOGGER.warn("[MetalFX] spatial scaler encode failed; falling back to source", t);
+            }
+        }
+        return sourceTexture;
+    }
+
+    private void ensureTemporalScaler(int inW, int inH, int outW, int outH) {
+        if (temporalScaler != null
+                && cachedInputWidth == inW && cachedInputHeight == inH
+                && cachedOutputWidth == outW && cachedOutputHeight == outH) {
+            return;
+        }
+        if (temporalScaler != null) {
+            MetalNativeBridge.metallum_release_object(temporalScaler);
+            temporalScaler = null;
+        }
+        // Dimensions changed: the spatial scaler (if cached) is also stale.
+        // Release it so the next ensureSpatialScaler rebuilds at the new size
+        // instead of passing the cached-dimension check with stale data.
+        if (spatialScaler != null
+                && (cachedInputWidth != inW || cachedInputHeight != inH
+                || cachedOutputWidth != outW || cachedOutputHeight != outH)) {
+            MetalNativeBridge.metallum_release_object(spatialScaler);
+            spatialScaler = null;
+        }
+        temporalScaler = MetalNativeBridge.metallum_fx_create_temporal_scaler(
+                deviceHandle(),
+                inW, inH, outW, outH,
+                COLOR_FORMAT, COLOR_FORMAT,
+                MOTION_FORMAT_ENUM.value,
+                MTLPixelFormat.Depth32Float.value
+        );
+        cachedInputWidth = inW;
+        cachedInputHeight = inH;
+        cachedOutputWidth = outW;
+        cachedOutputHeight = outH;
+        // New scaler instance: must signal reset on first encode.
+        firstTemporalFrame = true;
+        // Temporal motion texture dimensions may have changed alongside the
+        // scaler (source-resolution motion, distinct from the interpolator's
+        // output-resolution motion). Reset the temporal clear flag — NOT
+        // motionVectorCleared, which tracks the interpolator's texture and
+        // has a different lifetime. Resetting the wrong flag here would leave
+        // the temporal motion texture with stale contents on a scaler rebuild,
+        // or spuriously force the interpolator to re-clear its own texture.
+        temporalMotionCleared = false;
+    }
+
     private void ensureSpatialScaler(int inW, int inH, int outW, int outH) {
         if (spatialScaler != null
                 && cachedInputWidth == inW && cachedInputHeight == inH
@@ -303,6 +496,16 @@ public final class MetalFxPipeline {
         if (spatialScaler != null) {
             MetalNativeBridge.metallum_release_object(spatialScaler);
             spatialScaler = null;
+        }
+        // Dimensions changed: the temporal scaler (if cached) is also stale.
+        // Release it so the next ensureTemporalScaler rebuilds at the new size.
+        if (temporalScaler != null
+                && (cachedInputWidth != inW || cachedInputHeight != inH
+                || cachedOutputWidth != outW || cachedOutputHeight != outH)) {
+            MetalNativeBridge.metallum_release_object(temporalScaler);
+            temporalScaler = null;
+            firstTemporalFrame = true;
+            motionVectorCleared = false;
         }
         spatialScaler = MetalNativeBridge.metallum_fx_create_spatial_scaler(
                 deviceHandle(),
@@ -379,7 +582,7 @@ public final class MetalFxPipeline {
 
     private void ensureMotionVectorTexture(int width, int height) {
         if (motionVectorTexture != null
-                && cachedOutputWidth == width && cachedOutputHeight == height) {
+                && cachedMotionWidth == width && cachedMotionHeight == height) {
             return;
         }
         if (motionVectorTexture != null) {
@@ -398,8 +601,41 @@ public final class MetalFxPipeline {
                 MTLStorageMode.Private,
                 "metallum-fx-motion"
         );
+        cachedMotionWidth = width;
+        cachedMotionHeight = height;
         // New texture: needs a clear before first interpolator use.
         motionVectorCleared = false;
+    }
+
+    /**
+     * Ensures the temporal scaler's motion texture exists at the given
+     * (source-resolution) dimensions. Independent from
+     * {@link #ensureMotionVectorTexture} because the temporal scaler needs
+     * source-resolution motion while the frame interpolator needs
+     * output-resolution motion — sharing one texture would force a recreate
+     * every frame when both features are active.
+     */
+    private void ensureTemporalMotionTexture(int width, int height) {
+        if (temporalMotionTexture != null
+                && cachedTemporalMotionWidth == width && cachedTemporalMotionHeight == height) {
+            return;
+        }
+        if (temporalMotionTexture != null) {
+            MetalNativeBridge.metallum_release_object(temporalMotionTexture);
+            temporalMotionTexture = null;
+        }
+        temporalMotionTexture = MetalNativeBridge.metallum_create_texture_2d(
+                deviceHandle(),
+                MOTION_FORMAT_ENUM,
+                width, height,
+                1L, 1L, 0L,
+                USAGE_SHADER_RW | MTLTextureUsage.RenderTarget.value,
+                MTLStorageMode.Private,
+                "metallum-fx-temporal-motion"
+        );
+        cachedTemporalMotionWidth = width;
+        cachedTemporalMotionHeight = height;
+        temporalMotionCleared = false;
     }
 
     /**
@@ -409,6 +645,10 @@ public final class MetalFxPipeline {
         if (spatialScaler != null) {
             MetalNativeBridge.metallum_release_object(spatialScaler);
             spatialScaler = null;
+        }
+        if (temporalScaler != null) {
+            MetalNativeBridge.metallum_release_object(temporalScaler);
+            temporalScaler = null;
         }
         if (frameInterpolator != null) {
             MetalNativeBridge.metallum_release_object(frameInterpolator);
@@ -430,12 +670,22 @@ public final class MetalFxPipeline {
             MetalNativeBridge.metallum_release_object(motionVectorTexture);
             motionVectorTexture = null;
         }
+        if (temporalMotionTexture != null) {
+            MetalNativeBridge.metallum_release_object(temporalMotionTexture);
+            temporalMotionTexture = null;
+        }
         previousFrameValid = false;
         loggedSpatialActive = false;
+        loggedTemporalActive = false;
         loggedInterpActive = false;
         motionVectorCleared = false;
+        temporalMotionCleared = false;
         firstInterpFrame = true;
+        firstTemporalFrame = true;
+        temporalJitterPhase = 0;
         cachedInputWidth = cachedInputHeight = cachedOutputWidth = cachedOutputHeight = -1;
         cachedUpscaledWidth = cachedUpscaledHeight = -1;
+        cachedMotionWidth = cachedMotionHeight = -1;
+        cachedTemporalMotionWidth = cachedTemporalMotionHeight = -1;
     }
 }

@@ -73,6 +73,17 @@ public final class MetalFxOptionsScreen extends Screen {
         spatialButton.setWidth(CONTENT_WIDTH);
         column.addChild(spatialButton);
 
+        // Temporal upscaling mode (OFF / AUTO). Replaces the spatial scaler
+        // with MTLFXTemporalScaler when active — higher quality, uses
+        // temporal history. Requires a non-OFF spatial mode (render scale).
+        CycleButton<MetalFxConfig.TemporalUpscalingMode> temporalButton =
+                CycleButton.<MetalFxConfig.TemporalUpscalingMode>builder(MetalFxOptionsScreen::temporalModeLabel, cfg.temporalMode())
+                        .withValues(MetalFxConfig.TemporalUpscalingMode.values())
+                        .create(Component.translatable("metallum.fx.options.temporal"),
+                                (button, mode) -> cfg.setTemporalMode(mode));
+        temporalButton.setWidth(CONTENT_WIDTH);
+        column.addChild(temporalButton);
+
         // Frame interpolation mode (OFF / AUTO / FORCE_BLEND)
         CycleButton<MetalFxConfig.FrameInterpolationMode> interpButton =
                 CycleButton.<MetalFxConfig.FrameInterpolationMode>builder(MetalFxOptionsScreen::interpModeLabel, cfg.interpolationMode())
@@ -134,6 +145,11 @@ public final class MetalFxOptionsScreen extends Screen {
                         ? Component.translatable("metallum.fx.capability.supported")
                         : Component.translatable("metallum.fx.capability.not_supported")));
 
+        lines.add(Component.translatable("metallum.fx.capability.temporal",
+                cfg.temporalSupported()
+                        ? Component.translatable("metallum.fx.capability.supported")
+                        : Component.translatable("metallum.fx.capability.not_supported")));
+
         lines.add(Component.translatable("metallum.fx.capability.interpolation",
                 cfg.interpolationSupported()
                         ? Component.translatable("metallum.fx.capability.supported")
@@ -154,6 +170,13 @@ public final class MetalFxOptionsScreen extends Screen {
             case BALANCED -> Component.translatable("metallum.fx.spatial.balanced");
             case PERFORMANCE -> Component.translatable("metallum.fx.spatial.performance");
             case ULTRA_PERFORMANCE -> Component.translatable("metallum.fx.spatial.ultra_performance");
+        };
+    }
+
+    private static Component temporalModeLabel(MetalFxConfig.TemporalUpscalingMode mode) {
+        return switch (mode) {
+            case OFF -> Component.translatable("metallum.fx.temporal.off");
+            case AUTO -> Component.translatable("metallum.fx.temporal.auto");
         };
     }
 
