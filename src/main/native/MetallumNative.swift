@@ -1801,7 +1801,13 @@ public func metallum_fx_supports_temporal_scaler(_ device: MTLDevice) -> Int {
 @_cdecl("metallum_fx_supports_frame_interpolation")
 public func metallum_fx_supports_frame_interpolation(_ device: MTLDevice) -> Int {
     return autoreleasepool {
-        if #available(macOS 26.0, iOS 26.0, *) {
+        // MTLFXFrameInterpolator shipped in macOS 14.0 / iOS 17.0, NOT 26.0.
+        // The previous guard (macOS 26.0) wrongly reported interpolation as
+        // unsupported on every macOS 14/15 device, silently disabling the
+        // feature even on M3/M4 machines where it works. Apple Silicon chip
+        // gating (M3+ / A17 Pro+) is already encoded inside
+        // `supportsDevice`, so we only need the OS-version floor here.
+        if #available(macOS 14.0, iOS 17.0, *) {
             let key = objectAddress(device)
             if let cached = MetalFxSupportCache.interpolation[key] {
                 return cached ? 1 : 0
