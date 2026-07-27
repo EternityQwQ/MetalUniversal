@@ -82,16 +82,6 @@ public final class MetalFxOptionsScreen extends Screen {
         interpButton.setWidth(CONTENT_WIDTH);
         column.addChild(interpButton);
 
-        // FXAA after upscale (on / off) — guarded behind spatial support.
-        // CycleButton.onOffBuilder(boolean) returns a Builder<Boolean> with
-        // the initial value preset and ON/OFF labels — this is the 26.2
-        // replacement for the removed CycleButton.onOff(boolean) factory.
-        CycleButton<Boolean> fxaaButton = CycleButton.onOffBuilder(cfg.fxaaAfterUpscale())
-                .create(Component.translatable("metallum.fx.options.fxaa"),
-                        (button, enabled) -> cfg.setFxaaAfterUpscale(enabled));
-        fxaaButton.setWidth(CONTENT_WIDTH);
-        column.addChild(fxaaButton);
-
         // Spacer
         column.addChild(new StringWidget(CONTENT_WIDTH, SPACING, Component.empty(), this.font));
 
@@ -150,8 +140,8 @@ public final class MetalFxOptionsScreen extends Screen {
                         : Component.translatable("metallum.fx.capability.not_supported")));
 
         // Hint for users on devices without hardware frame interpolation
-        if (!cfg.interpolationSupported() && cfg.blendSupported()) {
-            lines.add(Component.translatable("metallum.fx.capability.blint_hint"));
+        if (!cfg.interpolationSupported()) {
+            lines.add(Component.translatable("metallum.fx.capability.interp_hint"));
         }
 
         return lines;

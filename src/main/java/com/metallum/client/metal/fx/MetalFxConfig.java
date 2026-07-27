@@ -62,8 +62,10 @@ public final class MetalFxConfig {
     /**
      * Frame interpolation mode. {@link #OFF} disables the interpolator;
      * {@link #AUTO} uses {@code MTLFXFrameInterpolator} when the device
-     * supports it (M3+ / A17 Pro+) and falls back to the simple
-     * frame-blend path on older chips.
+     * supports it (M3+ / A17 Pro+). {@link #FORCE_BLEND} is retained for
+     * config-file backwards compatibility only — it resolves to the same
+     * hardware path as {@code AUTO}; the legacy 50/50 blend fallback was
+     * removed (unacceptable ghosting on fast-moving first-person content).
      */
     public enum FrameInterpolationMode {
         OFF,
@@ -74,14 +76,12 @@ public final class MetalFxConfig {
     private static final String CONFIG_FILE_NAME = "metallum_fx.properties";
     private static final String KEY_SPATIAL = "spatialUpscaling";
     private static final String KEY_INTERP = "frameInterpolation";
-    private static final String KEY_FXAA = "fxaaAfterUpscale";
     private static final String KEY_ACKNOWLEDGED = "acknowledged";
 
     private static volatile MetalFxConfig INSTANCE = new MetalFxConfig();
 
     private volatile SpatialMode spatialMode = SpatialMode.OFF;
     private volatile FrameInterpolationMode interpolationMode = FrameInterpolationMode.OFF;
-    private volatile boolean fxaaAfterUpscale = false;
     /**
      * Whether the user has acknowledged the MetalFX warning dialog at least
      * once. Persisted so the warning only shows the first time the user
@@ -109,10 +109,6 @@ public final class MetalFxConfig {
         return interpolationMode;
     }
 
-    public boolean fxaaAfterUpscale() {
-        return fxaaAfterUpscale;
-    }
-
     public boolean acknowledged() {
         return acknowledged;
     }
@@ -129,10 +125,6 @@ public final class MetalFxConfig {
         this.interpolationMode = mode;
     }
 
-    public void setFxaaAfterUpscale(boolean enabled) {
-        this.fxaaAfterUpscale = enabled;
-    }
-
     /**
      * @return {@code true} if the active spatial mode is enabled <em>and</em>
      * the current device supports {@code MTLFXSpatialScaler}.
@@ -144,31 +136,33 @@ public final class MetalFxConfig {
     /**
      * @return {@code true} if frame interpolation is enabled <em>and</em>
      * the device supports the hardware {@code MTLFXFrameInterpolator}
-     * path (M3+ / A17 Pro+). The legacy 50/50 blend fallback has been
-     * removed because it produced unacceptable ghosting on fast-moving
-     * first-person content — presenting a worse experience than no
-     * interpolation at all.
+     * path (M3+ / A17 Pro+).
      *
-     * <p>{@link FrameInterpolationMode#FORCE_BLEND} is now treated as
-     * "use the hardware path if available, otherwise off" — it's kept
-     * as an enum value only for config-file backwards compatibility.
+     * <p>The legacy 50/50 blend fallback was removed because it produced
+     * unacceptable ghosting on fast-moving first-person content. Both
+     * {@link FrameInterpolationMode#AUTO} and
+     * {@link FrameInterpolationMode#FORCE_BLEND} now resolve to "use the
+     * hardware path if available, otherwise off"; {@code FORCE_BLEND} is
+     * retained only for config-file backwards compatibility (a user with an
+     * old {@code frameInterpolation=FORCE_BLEND} line in their properties
+     * file still gets hardware interpolation rather than a parse failure).
      */
     public boolean isFrameInterpolationActive() {
         if (interpolationMode == FrameInterpolationMode.OFF) {
             return false;
         }
-        // Both AUTO and FORCE_BLEND now require the hardware path.
-        // The blend fallback was removed due to quality issues.
         return interpolationSupported;
     }
 
     /**
      * Whether the path that runs {@code MTLFXFrameInterpolator} should be
-     * taken. Distinct from {@link #isFrameInterpolationActive()} because
-     * {@code AUTO} on an M2 mac is "active" (uses blend) but not "uses FX".
+     * taken. Kept as a distinct hook from {@link #isFrameInterpolationActive()}
+     * so future non-hardware fallbacks can plug in here without touching
+     * every call site. Currently equivalent to
+     * {@code isFrameInterpolationActive()}.
      */
     public boolean usesMtlFxInterpolator() {
-        return interpolationMode == FrameInterpolationMode.AUTO && interpolationSupported;
+        return isFrameInterpolationActive();
     }
 
     public boolean spatialSupported() {
@@ -244,7 +238,6 @@ public final class MetalFxConfig {
             }
             cfg.spatialMode = parseEnum(props.getProperty(KEY_SPATIAL), SpatialMode.OFF, SpatialMode.class);
             cfg.interpolationMode = parseEnum(props.getProperty(KEY_INTERP), FrameInterpolationMode.OFF, FrameInterpolationMode.class);
-            cfg.fxaaAfterUpscale = Boolean.parseBoolean(props.getProperty(KEY_FXAA, "false"));
             cfg.acknowledged = Boolean.parseBoolean(props.getProperty(KEY_ACKNOWLEDGED, "false"));
         }
         // Preserve previously-queried device capabilities across reloads so
@@ -269,7 +262,6 @@ public final class MetalFxConfig {
         Properties props = new Properties();
         props.setProperty(KEY_SPATIAL, cfg.spatialMode.name());
         props.setProperty(KEY_INTERP, cfg.interpolationMode.name());
-        props.setProperty(KEY_FXAA, Boolean.toString(cfg.fxaaAfterUpscale));
         props.setProperty(KEY_ACKNOWLEDGED, Boolean.toString(cfg.acknowledged));
         Path configPath = configPath();
         try {

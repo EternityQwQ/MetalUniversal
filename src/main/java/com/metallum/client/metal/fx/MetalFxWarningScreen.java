@@ -170,8 +170,6 @@ public final class MetalFxWarningScreen extends Screen {
         lines.add(Component.translatable("metallum.fx.warning.temporal.line"));
         // Frame interpolator — official: macOS 14+, iOS 17+, hardware path requires M3 / A17 Pro+
         lines.add(Component.translatable("metallum.fx.warning.interp.line"));
-        // Blend fallback note.
-        lines.add(Component.translatable("metallum.fx.warning.blend.line"));
         return lines;
     }
 }

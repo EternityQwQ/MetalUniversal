@@ -7,7 +7,6 @@
 
   "metallum.fx.options.spatial": "Spatial Upscaling",
   "metallum.fx.options.frame_interpolation": "Frame Interpolation",
-  "metallum.fx.options.fxaa": "FXAA After Upscale",
 
   "metallum.fx.spatial.off": "Off",
   "metallum.fx.spatial.quality": "Quality (77%)",
@@ -16,8 +15,8 @@
   "metallum.fx.spatial.ultra_performance": "Ultra Performance (33%)",
 
   "metallum.fx.interp.off": "Off",
-  "metallum.fx.interp.auto": "Auto (Hardware or Blend)",
-  "metallum.fx.interp.force_blend": "Force Blend (50/50)",
+  "metallum.fx.interp.auto": "Auto (Hardware)",
+  "metallum.fx.interp.force_blend": "Auto (Hardware)",
 
   "metallum.fx.capability.device": "Device: %s",
   "metallum.fx.capability.spatial": "Spatial Scaler: %s",
@@ -25,14 +24,13 @@
   "metallum.fx.capability.supported": "Supported",
   "metallum.fx.capability.not_supported": "Not Supported",
   "metallum.fx.capability.unknown_device": "Unknown",
-  "metallum.fx.capability.blint_hint": "Hardware interpolation requires M3+ / A17 Pro+. Blend fallback is active.",
+  "metallum.fx.capability.interp_hint": "Hardware interpolation requires M3+ / A17 Pro+. Not available on this device.",
 
   "metallum.fx.warning.title": "MetalFX Compatibility Warning",
   "metallum.fx.warning.header": "Please confirm your device meets Apple's official MetalFX requirements:",
   "metallum.fx.warning.spatial.line": "Spatial Scaler: macOS 13.0+ / iOS 16.0+, Apple GPU family 7+ (M1 / A14 or newer)",
   "metallum.fx.warning.temporal.line": "Temporal Scaler: macOS 14.0+ / iOS 17.0+",
   "metallum.fx.warning.interp.line": "Frame Interpolator: macOS 14.0+ / iOS 17.0+, hardware path requires Apple GPU family 9 (M3 / A17 Pro or newer)",
-  "metallum.fx.warning.blend.line": "Devices without the hardware interpolation path fall back to a 50/50 blend mode automatically.",
   "metallum.fx.warning.note": "Enabling MetalFX on unsupported devices may cause visual artifacts, performance loss, or crashes.",
   "metallum.fx.warning.enable": "Enable MetalFX",
   "metallum.fx.warning.cancel": "Do Not Enable"
