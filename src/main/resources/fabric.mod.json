@@ -23,6 +23,9 @@
     ],
     "main": [
       "com.metallum.Metallum"
+    ],
+    "sodium": [
+      "com.metallum.compat.sodium.MetallumSodiumConfig"
     ]
   },
   "mixins": [

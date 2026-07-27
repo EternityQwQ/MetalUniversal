@@ -21,6 +21,21 @@ MetalUniversal 是一个基于 Apple Metal API 的 Minecraft 渲染后端模组�
 - **macOS**：Apple Silicon（M1 或更新），通过 Native Bridge 直接加载 `libmetallum.dylib`
 - **iOS**：iOS 14.0 或更高版本，预编译 `libmetallum.dylib`（arm64）和 `libspvc.dylib`（带 MSL 后端）内置于 jar 中
 
+## 运行依赖（前置条件）
+
+| 依赖 | 版本 | 说明 |
+|------|------|------|
+| Fabric Loader | >= 0.19.2 | **必需** — 模组加载器 |
+| Minecraft | 26.2 | **必需** — 目标游戏版本 |
+| Java | >= 25 | **必需** — 运行时环境 |
+| Sodium | mc26.2-0.9.0-fabric | **可选，强烈推荐** — 提供完整的视频设置界面适配 |
+
+> ### 关于 Sodium
+>
+> 安装 Sodium 后，MetalFX 设置会作为**独立页面**自动集成到 Sodium 的视频设置界面中（与 Iris 的 "Shader Packs" 页面注册方式一致），由 Sodium 官方 `ConfigEntryPoint` API 提供稳定的 UI 集成，自动获得与 Sodium 原生选项一致的渲染、搜索索引和 tab 排序行为。
+>
+> **未安装 Sodium 时**，MetalFX 设置入口仍可通过原版视频设置界面右上角的 "MetalFX 设置..." 按钮或全局快捷键 `F8` 打开，功能完全不受影响。
+
 ## MetalFX 超分辨率与帧插值
 
 本模组集成了 Apple [MetalFX](https://developer.apple.com/documentation/metalfx) 框架，提供空间超分辨率（Spatial Upscaling）与帧插值（Frame Interpolation）两项 GPU 加速功能，可在支持的设备上显著提升帧率与画面流畅度。
@@ -47,8 +62,8 @@ MetalUniversal 是一个基于 Apple Metal API 的 Minecraft 渲染后端模组�
 
 | 平台 | 系统版本 | 芯片要求 |
 |------|---------|---------|
-| macOS | 14.0+ | Apple GPU family 7+ |
-| iOS | 17.0+ | Apple GPU family 7+ |
+| macOS | 13.0+ | Apple GPU family 7+（M1 / A14 及以上） |
+| iOS | 16.0+ | Apple GPU family 7+（A14 及以上） |
 
 #### 帧插值（MTLFXFrameInterpolator，硬件加速路径）
 
@@ -61,11 +76,12 @@ MetalUniversal 是一个基于 Apple Metal API 的 Minecraft 渲染后端模组�
 
 ### 使用方法
 
-1. 启动 Minecraft，进入 **视频设置**（原版或 Sodium 视频设置界面均可）
-2. 点击右上角的 **"MetalFX 设置..."** 按钮（或按 `F8` 快捷键）
-3. 首次进入会弹出**适配警告界面**，列出上述官方系统与芯片要求，请确认您的设备满足条件
-4. 点击 **"开启 MetalFX"** 进入设置界面（点击 "不开启" 则返回，下次进入仍会提示）
-5. 在设置界面选择空间超分模式与帧插值模式，点击 **"完成"** 保存
+1. 启动 Minecraft，进入 **视频设置**
+   - **安装了 Sodium**：在 Sodium 视频设置左侧 mod 列表中点击 **MetalUniversal** 图标，即可进入 MetalFX 设置页面（与 Iris "Shader Packs" 入口位置一致）
+   - **未安装 Sodium**：点击原版视频设置界面右上角的 **"MetalFX 设置..."** 按钮，或随时按 `F8` 快捷键打开
+2. 首次进入会弹出**适配警告界面**，列出上述官方系统与芯片要求，请确认您的设备满足条件
+3. 点击 **"开启 MetalFX"** 进入设置界面（点击 "不开启" 则返回，下次进入仍会提示）
+4. 在设置界面选择空间超分模式、时间超分模式与帧插值模式，点击 **"完成"** 保存
 
 ### 设备能力自检
 

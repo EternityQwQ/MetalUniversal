@@ -12,8 +12,7 @@
     "render.WindowMixin",
     "sodium.DrawBackendMixin",
     "sodium.DrawContextMixin",
-    "sodium.SodiumPreferredGraphicsApiMixin",
-    "sodium.SodiumVideoSettingsScreenMixin"
+    "sodium.SodiumPreferredGraphicsApiMixin"
   ],
   "injectors": {
     "defaultRequire": 1
