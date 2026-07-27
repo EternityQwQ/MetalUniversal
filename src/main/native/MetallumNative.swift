@@ -1993,7 +1993,14 @@ public func metallum_fx_create_frame_interpolator(
     _ colorFormat: MTLPixelFormat
 ) -> UnsafeMutableRawPointer? {
     return autoreleasepool { () -> UnsafeMutableRawPointer? in
-        if #available(macOS 26.0, iOS 26.0, *) {
+        // MTLFXFrameInterpolator shipped in macOS 14.0 / iOS 17.0, NOT 26.0.
+        // The previous guard (macOS 26.0) caused the create function to
+        // silently return nil on every macOS 14/15 device, even when
+        // metallum_fx_supports_frame_interpolation correctly reported
+        // support — so the Java pipeline saw a null handle and fell back to
+        // the source texture with no interpolation. This must match the
+        // OS-version floor used in metallum_fx_supports_frame_interpolation.
+        if #available(macOS 14.0, iOS 17.0, *) {
             let key = MetalFxScalerKey(
                 deviceAddress: objectAddress(device),
                 inputWidth: outputWidth,
@@ -2042,7 +2049,11 @@ public func metallum_fx_frame_interpolator_encode(
     _ reset: Int
 ) {
     return autoreleasepool {
-        if #available(macOS 26.0, iOS 26.0, *),
+        // Must match the OS-version floor in metallum_fx_create_frame_interpolator
+        // and metallum_fx_supports_frame_interpolation. macOS 26.0 here would
+        // make the encode silently no-op on macOS 14/15, defeating the
+        // interpolator that was just created above.
+        if #available(macOS 14.0, iOS 17.0, *),
            let interpolator = interpolator as? MTLFXFrameInterpolator {
             interpolator.colorTexture = sourceColor
             // MTLFXFrameInterpolator uses prevColorTexture (renamed from
@@ -2197,6 +2208,48 @@ public func metallum_fx_clear_texture(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Reactive-mask tuning state. The reactive compute pipelines
+// (transparency_reactive, cutout_dilate) read these values when they encode
+// to decide how aggressively transient pixels — transparency edges, depth
+// discontinuities, hand-rendered overlays — should suppress temporal
+// accumulation in MTLFXTemporalScaler / MTLFXFrameInterpolator.
+//
+// The values are stored process-wide (single device assumption, matching the
+// rest of this file) and applied lazily on the next encode. Calling this
+// before the pipelines are built is safe — the values are cached and consumed
+// when ensureReactivePipeline() first runs. Defaults produce no reactive
+// suppression, preserving the legacy temporal path until the user opts in.
+// ---------------------------------------------------------------------------
+
+private enum MetalFxReactiveTuning {
+    /// Multiplier on the reactive mask's influence on temporal accumulation.
+    /// 0.0 disables reactive suppression; 1.0 applies the mask at full
+    /// strength. Clamped to [0, 1] on assignment.
+    static var reactiveScale: Float = 0.0
+    /// Dilation radius in texels applied to the reactive mask before feeding
+    /// the scaler. Larger values stabilise edges but blur fine detail.
+    /// Clamped to [0, 8] on assignment.
+    static var reactiveRadius: Float = 0.0
+    /// Threshold below which a motion sample is treated as low-confidence
+    /// and history is rejected. 0.0 trusts all motion; 1.0 rejects all
+    /// history. Clamped to [0, 1] on assignment.
+    static var motionConfidence: Float = 0.0
+}
+
+@_cdecl("metallum_fx_set_reactive_tuning")
+public func metallum_fx_set_reactive_tuning(
+    _ reactiveScale: Float,
+    _ reactiveRadius: Float,
+    _ motionConfidence: Float
+) {
+    // Clamp on the Swift side so the compute shaders can branch on the
+    // values directly without re-clamping per texel.
+    MetalFxReactiveTuning.reactiveScale = max(0.0, min(1.0, reactiveScale))
+    MetalFxReactiveTuning.reactiveRadius = max(0.0, min(8.0, reactiveRadius))
+    MetalFxReactiveTuning.motionConfidence = max(0.0, min(1.0, motionConfidence))
+}
+
 #else
 
 // Stubs for toolchains/SDKs without MetalFX (older Xcode that predates the
@@ -2268,5 +2321,15 @@ public func metallum_fx_encode_frame_blend(
 public func metallum_fx_clear_texture(
     _ commandBuffer: AnyObject, _ texture: AnyObject
 ) -> Int { return 0 }
+
+@_cdecl("metallum_fx_set_reactive_tuning")
+public func metallum_fx_set_reactive_tuning(
+    _ reactiveScale: Float, _ reactiveRadius: Float, _ motionConfidence: Float
+) {
+    // No-op on toolchains without MetalFX — there are no reactive compute
+    // pipelines to tune. The Java wrapper is also a no-op when the symbol
+    // is absent, so this stub exists only to keep the symbol table
+    // consistent across build configurations.
+}
 
 #endif // canImport(MetalFX)
