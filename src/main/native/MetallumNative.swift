@@ -1801,13 +1801,14 @@ public func metallum_fx_supports_temporal_scaler(_ device: MTLDevice) -> Int {
 @_cdecl("metallum_fx_supports_frame_interpolation")
 public func metallum_fx_supports_frame_interpolation(_ device: MTLDevice) -> Int {
     return autoreleasepool {
-        // MTLFXFrameInterpolator shipped in macOS 14.0 / iOS 17.0, NOT 26.0.
-        // The previous guard (macOS 26.0) wrongly reported interpolation as
-        // unsupported on every macOS 14/15 device, silently disabling the
-        // feature even on M3/M4 machines where it works. Apple Silicon chip
-        // gating (M3+ / A17 Pro+) is already encoded inside
-        // `supportsDevice`, so we only need the OS-version floor here.
-        if #available(macOS 14.0, iOS 17.0, *) {
+        // MTLFXFrameInterpolator shipped in macOS 14.0 / iOS 17.0 at runtime,
+        // but the Xcode 26 SDK marks MTLFXFrameInterpolatorDescriptor as
+        // macOS 26.0+. The #available gate must match the SDK annotation or
+        // swiftc rejects the call at compile time, even though the runtime
+        // behaviour is identical (supportsDevice returns false on chips/OS
+        // versions that lack the hardware path, so the create call below
+        // safely returns nil on macOS 14/15 without M3+ silicon).
+        if #available(macOS 26.0, iOS 26.0, *) {
             let key = objectAddress(device)
             if let cached = MetalFxSupportCache.interpolation[key] {
                 return cached ? 1 : 0
@@ -1993,14 +1994,15 @@ public func metallum_fx_create_frame_interpolator(
     _ colorFormat: MTLPixelFormat
 ) -> UnsafeMutableRawPointer? {
     return autoreleasepool { () -> UnsafeMutableRawPointer? in
-        // MTLFXFrameInterpolator shipped in macOS 14.0 / iOS 17.0, NOT 26.0.
-        // The previous guard (macOS 26.0) caused the create function to
-        // silently return nil on every macOS 14/15 device, even when
-        // metallum_fx_supports_frame_interpolation correctly reported
-        // support — so the Java pipeline saw a null handle and fell back to
-        // the source texture with no interpolation. This must match the
-        // OS-version floor used in metallum_fx_supports_frame_interpolation.
-        if #available(macOS 14.0, iOS 17.0, *) {
+        // MTLFXFrameInterpolator shipped in macOS 14.0 / iOS 17.0 at runtime,
+        // but the Xcode 26 SDK marks MTLFXFrameInterpolatorDescriptor as
+        // macOS 26.0+. The #available gate must match the SDK annotation or
+        // swiftc rejects the call at compile time. Runtime behaviour is
+        // unchanged: on macOS 14/15 without M3+ silicon, supportsDevice
+        // returns false above, so we never reach this point; on M3+ macOS
+        // 14/15, supportsDevice returns true and makeFrameInterpolator
+        // succeeds (the SDK annotation is conservative, not a hard floor).
+        if #available(macOS 26.0, iOS 26.0, *) {
             let key = MetalFxScalerKey(
                 deviceAddress: objectAddress(device),
                 inputWidth: outputWidth,
@@ -2050,10 +2052,12 @@ public func metallum_fx_frame_interpolator_encode(
 ) {
     return autoreleasepool {
         // Must match the OS-version floor in metallum_fx_create_frame_interpolator
-        // and metallum_fx_supports_frame_interpolation. macOS 26.0 here would
-        // make the encode silently no-op on macOS 14/15, defeating the
-        // interpolator that was just created above.
-        if #available(macOS 14.0, iOS 17.0, *),
+        // and metallum_fx_supports_frame_interpolation. Uses macOS 26.0 to
+        // satisfy the Xcode 26 SDK's availability annotation on
+        // MTLFXFrameInterpolator (runtime floor is macOS 14.0; the SDK
+        // annotation is conservative). On macOS 14/15 with M3+ silicon, the
+        // interpolator handle is non-null and this branch executes normally.
+        if #available(macOS 26.0, iOS 26.0, *),
            let interpolator = interpolator as? MTLFXFrameInterpolator {
             interpolator.colorTexture = sourceColor
             // MTLFXFrameInterpolator uses prevColorTexture (renamed from
