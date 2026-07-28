@@ -6,8 +6,13 @@
   "metallum.fx.options.header": "Apple MetalFX Upscaling & Frame Interpolation",
 
   "metallum.fx.options.spatial": "Spatial Upscaling",
+  "metallum.fx.options.spatial.tooltip": "Render the 3D scene at a fraction of display resolution, then upscale with MetalFX. Lower scales = higher FPS but softer image.",
   "metallum.fx.options.temporal": "Temporal Upscaling",
+  "metallum.fx.options.temporal.tooltip": "Use motion-vector-based temporal upscaling for sharper output than spatial-only. Requires spatial upscaling to be enabled.",
   "metallum.fx.options.frame_interpolation": "Frame Interpolation",
+  "metallum.fx.options.frame_interpolation.tooltip": "Generate interpolated frames between rendered frames for smoother motion. Requires macOS 26+ / iOS 26+ and M3+ / A17 Pro+. Requires spatial upscaling to be enabled.",
+  "metallum.fx.options.group": "MetalFX Upscaling",
+  "metallum.fx.options.advanced_group": "Advanced",
 
   "metallum.fx.spatial.off": "Off",
   "metallum.fx.spatial.quality": "Quality (77%)",

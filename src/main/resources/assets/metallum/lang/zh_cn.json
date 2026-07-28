@@ -6,9 +6,13 @@
   "metallum.fx.options.header": "Apple MetalFX 超分与帧插值",
 
   "metallum.fx.options.spatial": "空间超分",
+  "metallum.fx.options.spatial.tooltip": "以显示分辨率的指定比例渲染 3D 场景，再用 MetalFX 超分放大。比例越低帧率越高但画面越模糊。",
   "metallum.fx.options.temporal": "时间超分",
+  "metallum.fx.options.temporal.tooltip": "使用基于运动向量的时域超分，比纯空间超分更清晰。需要先开启空间超分。",
   "metallum.fx.options.frame_interpolation": "帧插值",
-  "metallum.fx.options.spatial_slider": "空间超分：%s（%s）",
+  "metallum.fx.options.frame_interpolation.tooltip": "在渲染帧之间生成插值帧以获得更流畅的画面。需要 macOS 26+ / iOS 26+ 及 M3+ / A17 Pro+ 芯片。需要先开启空间超分。",
+  "metallum.fx.options.group": "MetalFX 超分",
+  "metallum.fx.options.advanced_group": "高级",
 
   "metallum.fx.spatial.off": "关闭",
   "metallum.fx.spatial.quality": "质量 (77%)",
