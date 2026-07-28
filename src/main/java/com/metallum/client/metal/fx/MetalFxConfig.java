@@ -264,6 +264,7 @@ public final class MetalFxConfig {
                 Metallum.LOGGER.info(
                         "[MetalFX] device='{}' spatial={} temporal={} interpolation={} blend={}",
                         deviceName, spatialSupported, temporalSupported, interpolationSupported, blendSupported);
+                MetalFxSystemCheck.run(this);
             } catch (Throwable t) {
                 Metallum.LOGGER.warn("[MetalFX] Failed to query device capabilities; MetalFX disabled", t);
                 spatialSupported = false;

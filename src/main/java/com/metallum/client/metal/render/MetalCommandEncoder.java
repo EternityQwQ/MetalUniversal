@@ -266,7 +266,8 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
                         commandBuffer.nativeHandle(),
                         source.nativeHandle(),
                         source.getWidth(0), source.getHeight(0),
-                        outputWidth, outputHeight
+                        outputWidth, outputHeight,
+                        this::queueForDestroy
                 );
             } catch (Throwable t) {
                 com.metallum.Metallum.LOGGER.warn("[MetalFX] present-path encode failed; presenting source directly", t);
@@ -563,7 +564,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         return new MetalFence(this, currentSubmitIndex);
     }
 
-    void queueForDestroy(final Runnable destroyAction) {
+    public void queueForDestroy(final Runnable destroyAction) {
         destroyQueue.add(destroyAction);
     }
 

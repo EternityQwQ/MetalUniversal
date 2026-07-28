@@ -10,6 +10,7 @@ import net.fabricmc.api.Environment;
 import org.jspecify.annotations.Nullable;
 
 import java.lang.foreign.MemorySegment;
+import java.util.function.Consumer;
 
 /**
  * Owns the native MetalFX scaler / interpolator handles and the intermediate
@@ -51,6 +52,19 @@ import java.lang.foreign.MemorySegment;
 @Environment(EnvType.CLIENT)
 public final class MetalFxPipeline {
     private final MemorySegment deviceHandle;
+
+    /**
+     * Per-frame deferred-destruction sink. When non-null, old GPU handles
+     * released during {@code ensure*} rebuilds are enqueued here instead of
+     * being freed immediately — this prevents use-after-free when prior
+     * in-flight command buffers still reference them. Set by the caller
+     * (MetalCommandEncoder) at the start of each {@link #maybeEncode} call
+     * via the {@code destroyLater} parameter; the encoder rotates the
+     * underlying queue on {@code submit()} so enqueued handles survive
+     * {@code MAX_SUBMITS_IN_FLIGHT} frames before actual release.
+     */
+    @Nullable
+    private Consumer<Runnable> currentDestroyLater = null;
 
     @Nullable
     private MemorySegment spatialScaler = null;
@@ -156,6 +170,27 @@ public final class MetalFxPipeline {
     }
 
     /**
+     * Releases a native handle either immediately or deferred, depending on
+     * whether a {@link #currentDestroyLater} sink is bound. When called from
+     * {@link #maybeEncode} (which binds the sink), the handle is enqueued
+     * for delayed release after {@code MAX_SUBMITS_IN_FLIGHT} frames — this
+     * is critical because prior in-flight command buffers may still reference
+     * the handle on the GPU. When called from {@link #close()} (no sink
+     * bound, device is shutting down and GPU is idle), releases immediately.
+     */
+    private void releaseLater(@Nullable MemorySegment handle) {
+        if (handle == null || handle.address() == 0) {
+            return;
+        }
+        final MemorySegment toRelease = handle;
+        if (currentDestroyLater != null) {
+            currentDestroyLater.accept(() -> MetalNativeBridge.metallum_release_object(toRelease));
+        } else {
+            MetalNativeBridge.metallum_release_object(toRelease);
+        }
+    }
+
+    /**
      * Encodes the MetalFX passes (if any) and returns the texture that should
      * be presented to the drawable. If neither spatial upscaling nor frame
      * interpolation is active, returns {@code sourceTexture} unchanged.
@@ -172,8 +207,10 @@ public final class MetalFxPipeline {
             MemorySegment commandBuffer,
             MemorySegment sourceTexture,
             int sourceWidth, int sourceHeight,
-            int outputWidth, int outputHeight
+            int outputWidth, int outputHeight,
+            Consumer<Runnable> destroyLater
     ) {
+        this.currentDestroyLater = destroyLater;
         MetalFxConfig cfg = MetalFxConfig.get();
         MemorySegment currentFrame = sourceTexture;
 
@@ -452,7 +489,7 @@ public final class MetalFxPipeline {
             return;
         }
         if (temporalScaler != null) {
-            MetalNativeBridge.metallum_release_object(temporalScaler);
+            releaseLater(temporalScaler);
             temporalScaler = null;
         }
         // Dimensions changed: the spatial scaler (if cached) is also stale.
@@ -461,7 +498,7 @@ public final class MetalFxPipeline {
         if (spatialScaler != null
                 && (cachedInputWidth != inW || cachedInputHeight != inH
                 || cachedOutputWidth != outW || cachedOutputHeight != outH)) {
-            MetalNativeBridge.metallum_release_object(spatialScaler);
+            releaseLater(spatialScaler);
             spatialScaler = null;
         }
         temporalScaler = MetalNativeBridge.metallum_fx_create_temporal_scaler(
@@ -494,7 +531,7 @@ public final class MetalFxPipeline {
             return;
         }
         if (spatialScaler != null) {
-            MetalNativeBridge.metallum_release_object(spatialScaler);
+            releaseLater(spatialScaler);
             spatialScaler = null;
         }
         // Dimensions changed: the temporal scaler (if cached) is also stale.
@@ -502,7 +539,7 @@ public final class MetalFxPipeline {
         if (temporalScaler != null
                 && (cachedInputWidth != inW || cachedInputHeight != inH
                 || cachedOutputWidth != outW || cachedOutputHeight != outH)) {
-            MetalNativeBridge.metallum_release_object(temporalScaler);
+            releaseLater(temporalScaler);
             temporalScaler = null;
             firstTemporalFrame = true;
             motionVectorCleared = false;
@@ -524,7 +561,7 @@ public final class MetalFxPipeline {
             return;
         }
         if (upscaledColorTexture != null) {
-            MetalNativeBridge.metallum_release_object(upscaledColorTexture);
+            releaseLater(upscaledColorTexture);
             upscaledColorTexture = null;
         }
         upscaledColorTexture = MetalNativeBridge.metallum_create_texture_2d(
@@ -546,7 +583,7 @@ public final class MetalFxPipeline {
             return;
         }
         if (previousColorTexture != null) {
-            MetalNativeBridge.metallum_release_object(previousColorTexture);
+            releaseLater(previousColorTexture);
             previousColorTexture = null;
         }
         previousColorTexture = MetalNativeBridge.metallum_create_texture_2d(
@@ -566,7 +603,7 @@ public final class MetalFxPipeline {
             return;
         }
         if (interpolationOutputTexture != null) {
-            MetalNativeBridge.metallum_release_object(interpolationOutputTexture);
+            releaseLater(interpolationOutputTexture);
             interpolationOutputTexture = null;
         }
         interpolationOutputTexture = MetalNativeBridge.metallum_create_texture_2d(
@@ -586,7 +623,7 @@ public final class MetalFxPipeline {
             return;
         }
         if (motionVectorTexture != null) {
-            MetalNativeBridge.metallum_release_object(motionVectorTexture);
+            releaseLater(motionVectorTexture);
             motionVectorTexture = null;
         }
         // RenderTarget is required so metallum_fx_clear_texture can attach the
@@ -621,7 +658,7 @@ public final class MetalFxPipeline {
             return;
         }
         if (temporalMotionTexture != null) {
-            MetalNativeBridge.metallum_release_object(temporalMotionTexture);
+            releaseLater(temporalMotionTexture);
             temporalMotionTexture = null;
         }
         temporalMotionTexture = MetalNativeBridge.metallum_create_texture_2d(

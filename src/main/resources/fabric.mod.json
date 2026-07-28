@@ -34,9 +34,7 @@
   "depends": {
     "fabricloader": ">=0.19.2",
     "minecraft": "~26.2-",
-    "java": ">=25"
-  },
-  "suggests": {
-    "sodium": "*"
+    "java": ">=25",
+    "sodium": ">=0.9.1"
   }
 }
