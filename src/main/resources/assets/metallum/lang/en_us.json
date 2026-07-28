@@ -8,7 +8,6 @@
   "metallum.fx.options.spatial": "Spatial Upscaling",
   "metallum.fx.options.temporal": "Temporal Upscaling",
   "metallum.fx.options.frame_interpolation": "Frame Interpolation",
-  "metallum.fx.options.spatial_slider": "Spatial Upscaling: %s (%s)",
 
   "metallum.fx.spatial.off": "Off",
   "metallum.fx.spatial.quality": "Quality (77%)",

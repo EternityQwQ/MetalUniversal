@@ -24,7 +24,7 @@
     "main": [
       "com.metallum.Metallum"
     ],
-    "sodium": [
+    "sodium:config_api_user": [
       "com.metallum.compat.sodium.MetallumSodiumConfig"
     ]
   },

@@ -2,7 +2,6 @@ package com.metallum.client.metal.fx;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
-import net.minecraft.client.gui.components.AbstractSliderButton;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.CycleButton;
 import net.minecraft.client.gui.components.StringWidget;
@@ -18,14 +17,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * MetalFX 设置界面。提供空间超分（滑块）、时间超分（开关）、帧插值（开关）
+ * MetalFX 设置界面。提供空间超分（循环按钮）、时间超分（开关）、帧插值（开关）
  * 三个控件，以及设备能力自检信息。
- *
- * <p><b>空间超分滑块。</b> 参照原版"区块加载距离"滑块的交互方式，用
- * {@link AbstractSliderButton} 替代旧的 CycleButton。滑块有 5 档
- * （关闭 / 质量 / 平衡 / 性能 / 极致性能），拖动时实时显示档位名称和
- * 渲染比例，松手后立即生效（无需点"完成"）。这与 Iris 在 Sodium 选项
- * 页面中提供滑块控件的方式一致。
  *
  * <p><b>布局。</b> 垂直线性布局，宽度 320，居中。同时适配 macOS（宽屏）
  * 和 iOS（窄竖屏）。
@@ -61,8 +54,14 @@ public final class MetalFxOptionsScreen extends Screen {
         // 空白间隔
         column.addChild(new StringWidget(CONTENT_WIDTH, SPACING, Component.empty(), this.font));
 
-        // 空间超分 — 滑块（5 档，像区块加载距离那样拖动）
-        column.addChild(new MetalFxSpatialSlider(0, 0, CONTENT_WIDTH, BUTTON_HEIGHT, cfg));
+        // 空间超分 — 循环按钮（OFF / QUALITY / BALANCED / PERFORMANCE / ULTRA_PERFORMANCE）
+        CycleButton<MetalFxConfig.SpatialMode> spatialButton =
+                CycleButton.<MetalFxConfig.SpatialMode>builder(MetalFxOptionsScreen::spatialModeLabel, cfg.spatialMode())
+                        .withValues(MetalFxConfig.SpatialMode.values())
+                        .create(Component.translatable("metallum.fx.options.spatial"),
+                                (button, mode) -> cfg.setSpatialMode(mode));
+        spatialButton.setWidth(CONTENT_WIDTH);
+        column.addChild(spatialButton);
 
         // 时间超分 — 开关（OFF / AUTO）
         CycleButton<MetalFxConfig.TemporalUpscalingMode> temporalButton =
@@ -171,55 +170,5 @@ public final class MetalFxOptionsScreen extends Screen {
             case AUTO -> Component.translatable("metallum.fx.interp.auto");
             case FORCE_BLEND -> Component.translatable("metallum.fx.interp.force_blend");
         };
-    }
-
-    /**
-     * 空间超分档位滑块。将 5 个枚举档位映射到 [0,1] 区间，拖动时
-     * 吸附到最近的档位，实时显示档位名称。
-     *
-     * <p>映射方式：档位索引 / (档位数 - 1)。
-     * 例如 5 档时 OFF=0.0, QUALITY=0.25, BALANCED=0.5,
-     * PERFORMANCE=0.75, ULTRA_PERFORMANCE=1.0。
-     */
-    private static final class MetalFxSpatialSlider extends AbstractSliderButton {
-        private static final MetalFxConfig.SpatialMode[] MODES = MetalFxConfig.SpatialMode.values();
-        private final MetalFxConfig cfg;
-
-        MetalFxSpatialSlider(int x, int y, int width, int height, MetalFxConfig cfg) {
-            super(x, y, width, height, Component.empty(), modeToValue(cfg.spatialMode()));
-            this.cfg = cfg;
-            updateMessage();
-        }
-
-        private static double modeToValue(MetalFxConfig.SpatialMode mode) {
-            if (MODES.length <= 1) return 0.0;
-            return (double) mode.ordinal() / (MODES.length - 1);
-        }
-
-        private static MetalFxConfig.SpatialMode valueToMode(double value) {
-            if (MODES.length <= 1) return MODES[0];
-            int idx = (int) Math.round(value * (MODES.length - 1));
-            if (idx < 0) idx = 0;
-            if (idx >= MODES.length) idx = MODES.length - 1;
-            return MODES[idx];
-        }
-
-        @Override
-        protected void applyValue() {
-            MetalFxConfig.SpatialMode mode = valueToMode(this.value);
-            if (mode != cfg.spatialMode()) {
-                cfg.setSpatialMode(mode);
-                updateMessage();
-            }
-        }
-
-        @Override
-        protected void updateMessage() {
-            MetalFxConfig.SpatialMode mode = valueToMode(this.value);
-            setMessage(Component.translatable(
-                    "metallum.fx.options.spatial_slider",
-                    spatialModeLabel(mode),
-                    String.format("%.0f%%", mode.renderScale * 100)));
-        }
     }
 }
