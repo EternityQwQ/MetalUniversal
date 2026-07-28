@@ -30,13 +30,13 @@
   "metallum.fx.capability.supported": "Supported",
   "metallum.fx.capability.not_supported": "Not Supported",
   "metallum.fx.capability.unknown_device": "Unknown",
-  "metallum.fx.capability.interp_hint": "Hardware interpolation requires M3+ / A17 Pro+. Not available on this device.",
+  "metallum.fx.capability.interp_hint": "Hardware interpolation requires macOS 26+ / iOS 26+ and M3+ / A17 Pro+. Not available on this device.",
 
   "metallum.fx.warning.title": "MetalFX Compatibility Warning",
   "metallum.fx.warning.header": "Please confirm your device meets Apple's official MetalFX requirements:",
   "metallum.fx.warning.spatial.line": "Spatial Scaler: macOS 13.0+ / iOS 16.0+, Apple GPU family 7+ (M1 / A14 or newer)",
   "metallum.fx.warning.temporal.line": "Temporal Scaler: macOS 13.0+ / iOS 16.0+, Apple GPU family 7+ (M1 / A14 or newer)",
-  "metallum.fx.warning.interp.line": "Frame Interpolator: macOS 14.0+ / iOS 17.0+, hardware path requires Apple GPU family 9 (M3 / A17 Pro or newer)",
+  "metallum.fx.warning.interp.line": "Frame Interpolator: macOS 26.0+ / iOS 26.0+, hardware path requires Apple GPU family 9 (M3 / A17 Pro or newer)",
   "metallum.fx.warning.note": "Enabling MetalFX on unsupported devices may cause visual artifacts, performance loss, or crashes.",
   "metallum.fx.warning.enable": "Enable MetalFX",
   "metallum.fx.warning.cancel": "Do Not Enable"

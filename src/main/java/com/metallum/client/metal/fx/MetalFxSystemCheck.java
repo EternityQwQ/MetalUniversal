@@ -11,7 +11,7 @@ import net.fabricmc.api.Environment;
  *
  * <p>检测维度：
  * <ul>
- *   <li>操作系统 — macOS 13.0+ (Spatial/Temporal)、14.0+ (Frame Interpolator)</li>
+ *   <li>操作系统 — macOS 13.0+ (Spatial/Temporal)、26.0+ (Frame Interpolator)</li>
  *   <li>芯片 — Apple Silicon M1/A14+ (GPU family 7+)、M3/A17 Pro+ (family 9+)</li>
  *   <li>MetalFX 能力 — 由 native bridge 查询的实际设备支持情况</li>
  * </ul>
@@ -25,10 +25,11 @@ final class MetalFxSystemCheck {
 
     /**
      * macOS 版本下限。Spatial/Temporal Scaler 需要 13.0，
-     * Frame Interpolator 需要 14.0。
+     * Frame Interpolator 需要 26.0（MTLFXFrameInterpolator 硬件路径
+     * 在 macOS 26 / iOS 26 起稳定可用）。
      */
     private static final int MACOS_SPATIAL_MIN_MAJOR = 13;
-    private static final int MACOS_INTERP_MIN_MAJOR = 14;
+    private static final int MACOS_INTERP_MIN_MAJOR = 26;
 
     private MetalFxSystemCheck() {
     }

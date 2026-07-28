@@ -154,8 +154,8 @@ public final class MetalFxWarningScreen extends Screen {
      *       newer).</li>
      *   <li>MTLFXTemporalScaler — temporal upscaling. macOS 14.0+,
      *       iOS 17.0+.</li>
-     *   <li>MTLFXFrameInterpolator — frame interpolation. macOS 14.0+,
-     *       iOS 17.0+, requires Apple GPU family 9 (M3 / A17 Pro and
+     *   <li>MTLFXFrameInterpolator — frame interpolation. macOS 26.0+,
+     *       iOS 26.0+, requires Apple GPU family 9 (M3 / A17 Pro and
      *       newer) for the hardware-accelerated path.</li>
      * </ul>
      * On devices that lack the hardware path the MetalFXPipeline falls
@@ -168,7 +168,7 @@ public final class MetalFxWarningScreen extends Screen {
         lines.add(Component.translatable("metallum.fx.warning.spatial.line"));
         // Temporal scaler — official: macOS 14+, iOS 17+
         lines.add(Component.translatable("metallum.fx.warning.temporal.line"));
-        // Frame interpolator — official: macOS 14+, iOS 17+, hardware path requires M3 / A17 Pro+
+        // Frame interpolator — official: macOS 26+, iOS 26+, hardware path requires M3 / A17 Pro+
         lines.add(Component.translatable("metallum.fx.warning.interp.line"));
         return lines;
     }

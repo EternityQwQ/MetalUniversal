@@ -30,13 +30,13 @@
   "metallum.fx.capability.supported": "支持",
   "metallum.fx.capability.not_supported": "不支持",
   "metallum.fx.capability.unknown_device": "未知",
-  "metallum.fx.capability.interp_hint": "硬件插值需要 M3+ / A17 Pro+ 芯片。当前设备不可用。",
+  "metallum.fx.capability.interp_hint": "硬件插值需要 macOS 26+ / iOS 26+ 及 M3+ / A17 Pro+ 芯片。当前设备不可用。",
 
   "metallum.fx.warning.title": "MetalFX 适配警告",
   "metallum.fx.warning.header": "请确认您的设备满足 Apple 官方 MetalFX 适配要求：",
   "metallum.fx.warning.spatial.line": "空间超分 (Spatial)：macOS 13.0+ / iOS 16.0+，Apple GPU family 7 及以上（M1 / A14 及以上）",
   "metallum.fx.warning.temporal.line": "时间超分 (Temporal)：macOS 13.0+ / iOS 16.0+，Apple GPU family 7 及以上（M1 / A14 及以上）",
-  "metallum.fx.warning.interp.line": "帧插值 (Frame Interpolator)：macOS 14.0+ / iOS 17.0+，硬件加速需 Apple GPU family 9（M3 / A17 Pro 及以上）",
+  "metallum.fx.warning.interp.line": "帧插值 (Frame Interpolator)：macOS 26.0+ / iOS 26.0+，硬件加速需 Apple GPU family 9（M3 / A17 Pro 及以上）",
   "metallum.fx.warning.note": "在不符合要求的设备上启用 MetalFX 可能造成画面异常、性能下降或崩溃。",
   "metallum.fx.warning.enable": "开启 MetalFX",
   "metallum.fx.warning.cancel": "不开启"
