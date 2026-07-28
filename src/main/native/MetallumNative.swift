@@ -1861,9 +1861,14 @@ public func metallum_fx_create_spatial_scaler(
             //   .perceptual — input/output use a perceptual color space (sRGB)
             //   .linear     — input/output use a linear color space in [0,1]
             //   .hdr        — input/output use an HDR color space beyond [0,1]
-            // We default to .perceptual so the scaler works for any color-only
-            // present path; the depth-aware variant is exposed separately.
-            descriptor.colorProcessingMode = .perceptual
+            // Minecraft renders into a plain BGRA8Unorm (non-sRGB) texture and
+            // the CAMetalLayer is also .bgra8Unorm (non-sRGB). Using .perceptual
+            // here causes the scaler to wrongly apply sRGB↔linear conversions
+            // on already-linear data, producing a red screen with bright UI
+            // elements (Mojang logo, progress bar) crushed to invisible.
+            // .linear treats the data as raw linear values — matching the
+            // actual non-sRGB pipeline — and fixes the red screen.
+            descriptor.colorProcessingMode = .linear
             guard let scaler = try? descriptor.makeSpatialScaler(device: device) else {
                 NSLog("[metallum-fx] Failed to create MTLFXSpatialScaler (%dx%d -> %dx%d)",
                       inputWidth, inputHeight, outputWidth, outputHeight)
@@ -1938,6 +1943,12 @@ public func metallum_fx_create_temporal_scaler(
             descriptor.outputTextureFormat = outputFormat
             descriptor.motionTextureFormat = motionVectorFormat
             descriptor.depthTextureFormat = depthFormat
+            // Match the spatial scaler's color processing mode — Minecraft's
+            // render target and CAMetalLayer are both plain BGRA8Unorm
+            // (non-sRGB), so .linear is correct. The default (.perceptual)
+            // would apply unwanted sRGB↔linear conversions and cause a red
+            // screen identical to the spatial scaler bug.
+            descriptor.colorProcessingMode = .linear
             // temporalAAEnabled was removed from MTLFXTemporalScalerDescriptor
             // in the macOS 26 SDK; temporal AA is now always implicit.
             guard let scaler = try? descriptor.makeTemporalScaler(device: device) else {
