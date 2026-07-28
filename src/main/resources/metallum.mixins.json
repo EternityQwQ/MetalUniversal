@@ -7,7 +7,6 @@
   ],
   "client": [
     "render.PreferredGraphicsApiMixin",
-    "render.VideoSettingsScreenMixin",
     "render.MinecraftKeybindMixin",
     "render.WindowMixin",
     "sodium.DrawBackendMixin",

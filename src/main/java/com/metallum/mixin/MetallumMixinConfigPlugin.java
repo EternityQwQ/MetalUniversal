@@ -27,7 +27,6 @@ public final class MetallumMixinConfigPlugin implements IMixinConfigPlugin {
      */
     private static final Set<String> ALWAYS_APPLY_ON_MACOS = Set.of(
             "com.metallum.mixin.render.PreferredGraphicsApiMixin",
-            "com.metallum.mixin.render.VideoSettingsScreenMixin",
             "com.metallum.mixin.render.MinecraftKeybindMixin"
     );
 
