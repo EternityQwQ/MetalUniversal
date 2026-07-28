@@ -82,6 +82,34 @@ public abstract class WindowMixin {
         }
     }
 
+    // guiScaledWidth / guiScaledHeight are cached fields computed in
+    // resizeDisplay() from the (un-shrunk) framebufferWidth/Height. Because
+    // we intercept getWidth/getHeight "immediately" (without triggering
+    // resizeDisplay), these cached GUI dimensions stay at the old full-size
+    // values. If left un-intercepted, Screen.width / Screen.height would
+    // report e.g. 960 (from 1920) while the render target is only 634 — so
+    // all GUI widgets (buttons, etc.) would be laid out in the 960-wide
+    // coordinate space and land outside the 634-wide render target,
+    // vanishing from the screen. Scaling these getters keeps the GUI
+    // coordinate space consistent with the shrunk render target.
+    @Inject(method = "getGuiScaledWidth", at = @At("RETURN"), cancellable = true)
+    private void metallum$scaleGuiScaledWidth(CallbackInfoReturnable<Integer> cir) {
+        int original = cir.getReturnValue();
+        Integer scaled = metallum$scale(original);
+        if (scaled != null) {
+            cir.setReturnValue(scaled);
+        }
+    }
+
+    @Inject(method = "getGuiScaledHeight", at = @At("RETURN"), cancellable = true)
+    private void metallum$scaleGuiScaledHeight(CallbackInfoReturnable<Integer> cir) {
+        int original = cir.getReturnValue();
+        Integer scaled = metallum$scale(original);
+        if (scaled != null) {
+            cir.setReturnValue(scaled);
+        }
+    }
+
     /**
      * @return the dimension multiplied by the active spatial render scale, or
      *         {@code null} to leave the original value unchanged (non-Metal
