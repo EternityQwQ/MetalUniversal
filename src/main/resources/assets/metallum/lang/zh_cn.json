@@ -8,6 +8,7 @@
   "metallum.fx.options.spatial": "空间超分",
   "metallum.fx.options.temporal": "时间超分",
   "metallum.fx.options.frame_interpolation": "帧插值",
+  "metallum.fx.options.spatial_slider": "空间超分：%s（%s）",
 
   "metallum.fx.spatial.off": "关闭",
   "metallum.fx.spatial.quality": "质量 (77%)",

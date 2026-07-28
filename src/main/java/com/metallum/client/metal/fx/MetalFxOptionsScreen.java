@@ -2,6 +2,7 @@ package com.metallum.client.metal.fx;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.components.AbstractSliderButton;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.CycleButton;
 import net.minecraft.client.gui.components.StringWidget;
@@ -17,21 +18,17 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Standalone screen for configuring MetalFX spatial upscaling and frame
- * interpolation. Designed to be opened from a button injected into both
- * the vanilla {@code VideoSettingsScreen} and Sodium's video settings
- * screen, as well as from a dedicated keybind (fallback for headless /
- * iOS environments where the parent screen may not be reachable).
+ * MetalFX 设置界面。提供空间超分（滑块）、时间超分（开关）、帧插值（开关）
+ * 三个控件，以及设备能力自检信息。
  *
- * <p>The screen renders three cycling buttons (spatial mode, frame
- * interpolation mode, post-upscale FXAA toggle), a multi-line device
- * capability readout (chip name + which MetalFX features are supported),
- * and a "Done" button that persists the configuration via
- * {@link MetalFxConfig#save()} and returns to the parent screen.
+ * <p><b>空间超分滑块。</b> 参照原版"区块加载距离"滑块的交互方式，用
+ * {@link AbstractSliderButton} 替代旧的 CycleButton。滑块有 5 档
+ * （关闭 / 质量 / 平衡 / 性能 / 极致性能），拖动时实时显示档位名称和
+ * 渲染比例，松手后立即生效（无需点"完成"）。这与 Iris 在 Sodium 选项
+ * 页面中提供滑块控件的方式一致。
  *
- * <p>Layout is intentionally simple — a vertical linear layout that wraps
- * to the screen width — so it works equally well on macOS (wide window)
- * and iOS (narrow portrait orientation).
+ * <p><b>布局。</b> 垂直线性布局，宽度 320，居中。同时适配 macOS（宽屏）
+ * 和 iOS（窄竖屏）。
  */
 @Environment(EnvType.CLIENT)
 public final class MetalFxOptionsScreen extends Screen {
@@ -50,32 +47,24 @@ public final class MetalFxOptionsScreen extends Screen {
     protected void init() {
         LinearLayout column = LinearLayout.vertical().spacing(SPACING);
 
-        // Header
+        // 标题
         column.addChild(new StringWidget(CONTENT_WIDTH, BUTTON_HEIGHT,
                 Component.translatable("metallum.fx.options.header"),
                 this.font));
 
-        // Device capability readout
+        // 设备能力信息
         MetalFxConfig cfg = MetalFxConfig.get();
-        List<Component> capabilityLines = buildCapabilityLines(cfg);
-        for (Component line : capabilityLines) {
+        for (Component line : buildCapabilityLines(cfg)) {
             column.addChild(new StringWidget(CONTENT_WIDTH, BUTTON_HEIGHT, line, this.font));
         }
 
-        // Spacer
+        // 空白间隔
         column.addChild(new StringWidget(CONTENT_WIDTH, SPACING, Component.empty(), this.font));
 
-        // Spatial upscaling mode (OFF / QUALITY / BALANCED / PERFORMANCE / ULTRA_PERFORMANCE)
-        CycleButton<MetalFxConfig.SpatialMode> spatialButton = CycleButton.<MetalFxConfig.SpatialMode>builder(MetalFxOptionsScreen::spatialModeLabel, cfg.spatialMode())
-                .withValues(MetalFxConfig.SpatialMode.values())
-                .create(Component.translatable("metallum.fx.options.spatial"),
-                        (button, mode) -> cfg.setSpatialMode(mode));
-        spatialButton.setWidth(CONTENT_WIDTH);
-        column.addChild(spatialButton);
+        // 空间超分 — 滑块（5 档，像区块加载距离那样拖动）
+        column.addChild(new MetalFxSpatialSlider(0, 0, CONTENT_WIDTH, BUTTON_HEIGHT, cfg));
 
-        // Temporal upscaling mode (OFF / AUTO). Replaces the spatial scaler
-        // with MTLFXTemporalScaler when active — higher quality, uses
-        // temporal history. Requires a non-OFF spatial mode (render scale).
+        // 时间超分 — 开关（OFF / AUTO）
         CycleButton<MetalFxConfig.TemporalUpscalingMode> temporalButton =
                 CycleButton.<MetalFxConfig.TemporalUpscalingMode>builder(MetalFxOptionsScreen::temporalModeLabel, cfg.temporalMode())
                         .withValues(MetalFxConfig.TemporalUpscalingMode.values())
@@ -84,7 +73,7 @@ public final class MetalFxOptionsScreen extends Screen {
         temporalButton.setWidth(CONTENT_WIDTH);
         column.addChild(temporalButton);
 
-        // Frame interpolation mode (OFF / AUTO / FORCE_BLEND)
+        // 帧插值 — 开关（OFF / AUTO）
         CycleButton<MetalFxConfig.FrameInterpolationMode> interpButton =
                 CycleButton.<MetalFxConfig.FrameInterpolationMode>builder(MetalFxOptionsScreen::interpModeLabel, cfg.interpolationMode())
                         .withValues(MetalFxConfig.FrameInterpolationMode.values())
@@ -93,10 +82,10 @@ public final class MetalFxOptionsScreen extends Screen {
         interpButton.setWidth(CONTENT_WIDTH);
         column.addChild(interpButton);
 
-        // Spacer
+        // 空白间隔
         column.addChild(new StringWidget(CONTENT_WIDTH, SPACING, Component.empty(), this.font));
 
-        // Done button — persists the config and returns to parent
+        // 完成按钮 — 持久化配置并返回上级界面
         Button doneButton = Button.builder(Component.translatable("gui.done"), this::onDone)
                 .width(CONTENT_WIDTH)
                 .build();
@@ -104,8 +93,6 @@ public final class MetalFxOptionsScreen extends Screen {
 
         column.visitWidgets(this::addRenderableWidget);
         column.arrangeElements();
-        // Center the column horizontally; vertically place it below the title
-        // (which is drawn at y=16) and let it grow downward.
         FrameLayout.alignInRectangle(column, 0, 36, this.width, this.height, 0.5F, 0.0F);
     }
 
@@ -127,9 +114,8 @@ public final class MetalFxOptionsScreen extends Screen {
     }
 
     /**
-     * Builds the per-device capability readout shown at the top of the screen.
-     * Each line is a translation key with substitution args so it can be
-     * localized, falling back to English if the lang file is missing.
+     * 构建设备能力信息（芯片名称 + 各 MetalFX 特性支持情况）。
+     * 每行用带替换参数的翻译键，可本地化。
      */
     private static List<Component> buildCapabilityLines(MetalFxConfig cfg) {
         List<Component> lines = new ArrayList<>(4);
@@ -155,7 +141,6 @@ public final class MetalFxOptionsScreen extends Screen {
                         ? Component.translatable("metallum.fx.capability.supported")
                         : Component.translatable("metallum.fx.capability.not_supported")));
 
-        // Hint for users on devices without hardware frame interpolation
         if (!cfg.interpolationSupported()) {
             lines.add(Component.translatable("metallum.fx.capability.interp_hint"));
         }
@@ -186,5 +171,55 @@ public final class MetalFxOptionsScreen extends Screen {
             case AUTO -> Component.translatable("metallum.fx.interp.auto");
             case FORCE_BLEND -> Component.translatable("metallum.fx.interp.force_blend");
         };
+    }
+
+    /**
+     * 空间超分档位滑块。将 5 个枚举档位映射到 [0,1] 区间，拖动时
+     * 吸附到最近的档位，实时显示档位名称。
+     *
+     * <p>映射方式：档位索引 / (档位数 - 1)。
+     * 例如 5 档时 OFF=0.0, QUALITY=0.25, BALANCED=0.5,
+     * PERFORMANCE=0.75, ULTRA_PERFORMANCE=1.0。
+     */
+    private static final class MetalFxSpatialSlider extends AbstractSliderButton {
+        private static final MetalFxConfig.SpatialMode[] MODES = MetalFxConfig.SpatialMode.values();
+        private final MetalFxConfig cfg;
+
+        MetalFxSpatialSlider(int x, int y, int width, int height, MetalFxConfig cfg) {
+            super(x, y, width, height, Component.empty(), modeToValue(cfg.spatialMode()));
+            this.cfg = cfg;
+            updateMessage();
+        }
+
+        private static double modeToValue(MetalFxConfig.SpatialMode mode) {
+            if (MODES.length <= 1) return 0.0;
+            return (double) mode.ordinal() / (MODES.length - 1);
+        }
+
+        private static MetalFxConfig.SpatialMode valueToMode(double value) {
+            if (MODES.length <= 1) return MODES[0];
+            int idx = (int) Math.round(value * (MODES.length - 1));
+            if (idx < 0) idx = 0;
+            if (idx >= MODES.length) idx = MODES.length - 1;
+            return MODES[idx];
+        }
+
+        @Override
+        protected void applyValue() {
+            MetalFxConfig.SpatialMode mode = valueToMode(this.value);
+            if (mode != cfg.spatialMode()) {
+                cfg.setSpatialMode(mode);
+                updateMessage();
+            }
+        }
+
+        @Override
+        protected void updateMessage() {
+            MetalFxConfig.SpatialMode mode = valueToMode(this.value);
+            setMessage(Component.translatable(
+                    "metallum.fx.options.spatial_slider",
+                    spatialModeLabel(mode),
+                    String.format("%.0f%%", mode.renderScale * 100)));
+        }
     }
 }
