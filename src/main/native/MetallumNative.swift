@@ -1943,12 +1943,11 @@ public func metallum_fx_create_temporal_scaler(
             descriptor.outputTextureFormat = outputFormat
             descriptor.motionTextureFormat = motionVectorFormat
             descriptor.depthTextureFormat = depthFormat
-            // Match the spatial scaler's color processing mode — Minecraft's
-            // render target and CAMetalLayer are both plain BGRA8Unorm
-            // (non-sRGB), so .linear is correct. The default (.perceptual)
-            // would apply unwanted sRGB↔linear conversions and cause a red
-            // screen identical to the spatial scaler bug.
-            descriptor.colorProcessingMode = .linear
+            // MTLFXTemporalScalerDescriptor does NOT have a
+            // colorProcessingMode property (only the spatial scaler does).
+            // The temporal scaler's color handling is fixed by its input
+            // texture format, which is plain BGRA8Unorm (non-sRGB) — no
+            // extra configuration needed.
             // temporalAAEnabled was removed from MTLFXTemporalScalerDescriptor
             // in the macOS 26 SDK; temporal AA is now always implicit.
             guard let scaler = try? descriptor.makeTemporalScaler(device: device) else {
