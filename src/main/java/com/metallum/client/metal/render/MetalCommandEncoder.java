@@ -84,6 +84,9 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         if (currentEncoder != null) {
             if (currentEncoder instanceof MTLRenderCommandEncoder renderEncoder) {
                 renderEncoder.updateFence(fence, MTLRenderStages.VertexAndFragment);
+                if (currentRenderPass != null) {
+                    currentRenderPass.invalidateEncoderState();
+                }
             } else if (currentEncoder instanceof MTLBlitCommandEncoder blitEncoder) {
                 blitEncoder.updateFence(fence);
             }

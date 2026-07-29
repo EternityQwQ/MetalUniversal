@@ -283,7 +283,6 @@ final class MetalRenderPass implements RenderPassBackend {
             final @NonNull T uniformArgument
     ) {
         IndexType fallbackIndexType = defaultIndexType == null ? IndexType.SHORT : defaultIndexType;
-        MTLRenderCommandEncoder enc = renderEncoder();
 
         for (RenderPass.Draw<T> draw : draws) {
             MTLIndexType drawIndexType = MTLIndexType.from(draw.indexType() == null ? fallbackIndexType : draw.indexType());
@@ -296,6 +295,7 @@ final class MetalRenderPass implements RenderPassBackend {
                 draw.uniformUploaderConsumer().accept(uniformArgument, this::setUniform);
             }
 
+            MTLRenderCommandEncoder enc = renderEncoder();
             if (scissorDirty || vertexBuffersDirty || dirtyDescriptorMask != 0L || pipelineDirty) {
                 bindDrawState(enc);
             }
@@ -399,6 +399,12 @@ final class MetalRenderPass implements RenderPassBackend {
         clearColor = null;
         clearDepthEnabled = false;
         return encoder;
+    }
+
+    void invalidateEncoderState() {
+        pipelineDirty = true;
+        scissorDirty = true;
+        vertexBuffersDirty = true;
     }
 
     GpuBufferSlice.MappedView allocateTransient(final long size, final long alignment, @GpuBuffer.Usage final int usage) {
