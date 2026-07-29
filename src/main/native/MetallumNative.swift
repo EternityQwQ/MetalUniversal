@@ -856,6 +856,15 @@ public func metallum_create_texture_2d(
     _ storageMode: MTLStorageMode,
     _ labelPtr: UnsafePointer<CChar>?
 ) -> UnsafeMutableRawPointer? {
+    // Metal validation aborts the process (uncatchable, even in release) when
+    // MTLTextureDescriptor has width/height of zero. Reject zero dimensions
+    // up-front and return nil so the Java caller can fall back gracefully.
+    // This is the root-cause fix for the 4:3 / window-not-ready crashes
+    // ("MTLTextureDescriptor has width of zero. MTLTextureDescriptor has height of zero.").
+    guard width > 0, height > 0 else {
+        NSLog("[metallum] metallum_create_texture_2d rejected zero dimension: %llux%llu", width, height)
+        return nil
+    }
     return autoreleasepool {
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: pixelFormat,
@@ -1835,6 +1844,14 @@ public func metallum_fx_create_spatial_scaler(
     _ colorFormat: MTLPixelFormat,
     _ outputFormat: MTLPixelFormat
 ) -> UnsafeMutableRawPointer? {
+    // makeSpatialScaler internally allocates textures at input/output size;
+    // a zero dimension triggers an uncatchable Metal validation abort.
+    // Reject up-front and return nil so the JVM falls back to the source texture.
+    guard inputWidth > 0, inputHeight > 0, outputWidth > 0, outputHeight > 0 else {
+        NSLog("[metallum-fx] spatial scaler rejected zero dimension: input=%dx%d output=%dx%d",
+              inputWidth, inputHeight, outputWidth, outputHeight)
+        return nil
+    }
     return autoreleasepool { () -> UnsafeMutableRawPointer? in
         if #available(macOS 13.0, iOS 16.0, *) {
             let key = MetalFxScalerKey(
@@ -1919,6 +1936,14 @@ public func metallum_fx_create_temporal_scaler(
     _ motionVectorFormat: MTLPixelFormat,
     _ depthFormat: MTLPixelFormat
 ) -> UnsafeMutableRawPointer? {
+    // makeTemporalScaler internally allocates textures at input/output size;
+    // a zero dimension triggers an uncatchable Metal validation abort.
+    // Reject up-front and return nil so the JVM falls back to spatial/source.
+    guard inputWidth > 0, inputHeight > 0, outputWidth > 0, outputHeight > 0 else {
+        NSLog("[metallum-fx] temporal scaler rejected zero dimension: input=%dx%d output=%dx%d",
+              inputWidth, inputHeight, outputWidth, outputHeight)
+        return nil
+    }
     return autoreleasepool { () -> UnsafeMutableRawPointer? in
         if #available(macOS 13.0, iOS 16.0, *) {
             let key = MetalFxScalerKey(
@@ -2003,6 +2028,14 @@ public func metallum_fx_create_frame_interpolator(
     _ outputHeight: Int,
     _ colorFormat: MTLPixelFormat
 ) -> UnsafeMutableRawPointer? {
+    // makeFrameInterpolator internally allocates textures at output size;
+    // a zero dimension triggers an uncatchable Metal validation abort.
+    // Reject up-front and return nil so the JVM skips interpolation.
+    guard outputWidth > 0, outputHeight > 0 else {
+        NSLog("[metallum-fx] frame interpolator rejected zero dimension: %dx%d",
+              outputWidth, outputHeight)
+        return nil
+    }
     return autoreleasepool { () -> UnsafeMutableRawPointer? in
         // MTLFXFrameInterpolator shipped in macOS 14.0 / iOS 17.0 at runtime,
         // but the Xcode 26 SDK marks MTLFXFrameInterpolatorDescriptor as

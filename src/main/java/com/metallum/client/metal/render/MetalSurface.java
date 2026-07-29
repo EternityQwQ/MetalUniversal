@@ -121,8 +121,21 @@ final class MetalSurface implements GpuSurfaceBackend {
             realWidth = pW.get(0);
             realHeight = pH.get(0);
         }
-        this.displayWidth = realWidth > 0 ? realWidth : config.width();
-        this.displayHeight = realHeight > 0 ? realHeight : config.height();
+        // GLFW can return 0 for the framebuffer size when the window is
+        // minimized, not yet realized, or in the middle of a DPI change.
+        // Propagating 0 into displayWidth/displayHeight would later cause
+        // MetalFX to create zero-sized textures -> Metal validation abort
+        // (the 4:3 / window-not-ready crash). Fall back to the configuration
+        // dimensions, which were already validated > 0 above.
+        if (realWidth <= 0 || realHeight <= 0) {
+            realWidth = config.width();
+            realHeight = config.height();
+            Metallum.LOGGER.warn(
+                    "[MetalFX] glfwGetFramebufferSize returned {}x{}; falling back to config {}x{}",
+                    realWidth, realHeight, config.width(), config.height());
+        }
+        this.displayWidth = realWidth;
+        this.displayHeight = realHeight;
         applyInternalResolution(config);
 
         // The CAMetalLayer.drawableSize is ALWAYS the full display
@@ -169,6 +182,27 @@ final class MetalSurface implements GpuSurfaceBackend {
             float scale = mode.renderScale;
             targetWidth = Math.max(1, Math.round(this.displayWidth * scale));
             targetHeight = Math.max(1, Math.round(this.displayHeight * scale));
+
+            // MTLFXSpatialScaler / MTLFXTemporalScaler require output <= 3 * input
+            // (per axis). When renderScale is too low (e.g. ULTRA_PERFORMANCE at
+            // 0.33 -> 3.03x upscale), the scaler's makeSpatialScaler/makeTemporalScaler
+            // throws and returns nil, which previously froze the frame because the
+            // Java side misread MemorySegment.NULL as a valid handle. Clamp the
+            // internal resolution to at least 1/3 of the display so the upscale
+            // ratio is exactly 3.0x — the limit MetalFX accepts. The FPS cost is
+            // negligible (internal resolution grows by ~1% at the 33% tier).
+            int minInputWidth = (int) Math.ceil(this.displayWidth / 3.0);
+            int minInputHeight = (int) Math.ceil(this.displayHeight / 3.0);
+            if (targetWidth < minInputWidth || targetHeight < minInputHeight) {
+                int clampedW = Math.max(targetWidth, minInputWidth);
+                int clampedH = Math.max(targetHeight, minInputHeight);
+                Metallum.LOGGER.info(
+                        "[MetalFX] clamped internal resolution {}x{} -> {}x{} (min 1/3 of display {}x{}, mode={})",
+                        targetWidth, targetHeight, clampedW, clampedH, this.displayWidth, this.displayHeight, mode);
+                targetWidth = clampedW;
+                targetHeight = clampedH;
+            }
+
             String modeLabel = fxConfig.isTemporalUpscalingActive() ? "temporal" : "spatial";
             Metallum.LOGGER.info(
                     "[MetalFX] {} upscaling active: spatialMode={} renderScale={} internal={}x{} display={}x{}",

@@ -214,6 +214,23 @@ public final class MetalFxPipeline {
         MetalFxConfig cfg = MetalFxConfig.get();
         MemorySegment currentFrame = sourceTexture;
 
+        // Defense-in-depth against zero/negative dimensions. The Swift side
+        // now guards metallum_create_texture_2d / metallum_fx_create_*_scaler
+        // against zero dimensions, but Metal validation aborts are
+        // uncatchable — we never want to reach the native calls with bad
+        // sizes. This covers edge cases where the source texture reports 0
+        // (window not ready, 4:3 framebuffer timing) even when the config
+        // flags suggest upscaling should run.
+        if (sourceWidth <= 0 || sourceHeight <= 0
+                || outputWidth <= 0 || outputHeight <= 0) {
+            if (loggedSpatialActive || loggedTemporalActive || loggedInterpActive) {
+                Metallum.LOGGER.warn(
+                        "[MetalFX] rejecting zero/negative dimensions: source={}x{} output={}x{}; presenting source directly",
+                        sourceWidth, sourceHeight, outputWidth, outputHeight);
+            }
+            return sourceTexture;
+        }
+
         // ---- Stage 1: upscaling (temporal OR spatial) --------------------
         // Temporal upscaling replaces spatial upscaling when enabled: it
         // produces a higher-quality result by integrating information across
@@ -232,7 +249,7 @@ public final class MetalFxPipeline {
                 // Falls back to spatial on any failure.
                 ensureTemporalScaler(sourceWidth, sourceHeight, outputWidth, outputHeight);
                 ensureTemporalMotionTexture(sourceWidth, sourceHeight);
-                if (temporalScaler != null && upscaledColorTexture != null) {
+                if (!MetalNativeBridge.isNullHandle(temporalScaler) && upscaledColorTexture != null) {
                     try {
                         if (!temporalMotionCleared && temporalMotionTexture != null) {
                             // metallum_fx_clear_texture returns false if the
@@ -326,12 +343,12 @@ public final class MetalFxPipeline {
             ensurePreviousTexture(outputWidth, outputHeight);
             ensureMotionVectorTexture(outputWidth, outputHeight);
             if (interpolationOutputTexture != null && previousColorTexture != null) {
-                if (frameInterpolator == null) {
+                if (MetalNativeBridge.isNullHandle(frameInterpolator)) {
                     frameInterpolator = MetalNativeBridge.metallum_fx_create_frame_interpolator(
                             deviceHandle(), outputWidth, outputHeight, COLOR_FORMAT
                     );
                 }
-                if (frameInterpolator != null) {
+                if (!MetalNativeBridge.isNullHandle(frameInterpolator)) {
                     // Zero the motion-vector texture once after creation. The
                     // texture uses Private storage, which has undefined initial
                     // contents — feeding garbage RG32Float motion vectors into
@@ -459,8 +476,21 @@ public final class MetalFxPipeline {
             final MetalFxConfig cfg
     ) {
         ensureSpatialScaler(sourceWidth, sourceHeight, outputWidth, outputHeight);
-        if (spatialScaler != null && upscaledColorTexture != null) {
+        if (!MetalNativeBridge.isNullHandle(spatialScaler) && upscaledColorTexture != null) {
             try {
+                // Clear the upscaled texture before each spatial encode.
+                // MTLFXSpatialScaler is a single-frame upscaler with no
+                // temporal history — when temporal upscaling is off, the
+                // Private-storage output texture may retain stale data from
+                // the previous frame in regions the scaler doesn't fully
+                // overwrite, causing per-pixel flicker on static UI elements
+                // (buttons, text). A clear ensures each frame starts from a
+                // known zero state. The texture now carries RenderTarget
+                // usage (see ensureUpscaledTexture) so the clear pass can
+                // attach it.
+                if (!MetalNativeBridge.isNullHandle(commandBuffer)) {
+                    MetalNativeBridge.metallum_fx_clear_texture(commandBuffer, upscaledColorTexture);
+                }
                 MetalNativeBridge.metallum_fx_spatial_scaler_encode(
                         spatialScaler,
                         commandBuffer,
@@ -483,19 +513,19 @@ public final class MetalFxPipeline {
     }
 
     private void ensureTemporalScaler(int inW, int inH, int outW, int outH) {
-        if (temporalScaler != null
+        if (!MetalNativeBridge.isNullHandle(temporalScaler)
                 && cachedInputWidth == inW && cachedInputHeight == inH
                 && cachedOutputWidth == outW && cachedOutputHeight == outH) {
             return;
         }
-        if (temporalScaler != null) {
+        if (!MetalNativeBridge.isNullHandle(temporalScaler)) {
             releaseLater(temporalScaler);
             temporalScaler = null;
         }
         // Dimensions changed: the spatial scaler (if cached) is also stale.
         // Release it so the next ensureSpatialScaler rebuilds at the new size
         // instead of passing the cached-dimension check with stale data.
-        if (spatialScaler != null
+        if (!MetalNativeBridge.isNullHandle(spatialScaler)
                 && (cachedInputWidth != inW || cachedInputHeight != inH
                 || cachedOutputWidth != outW || cachedOutputHeight != outH)) {
             releaseLater(spatialScaler);
@@ -508,6 +538,19 @@ public final class MetalFxPipeline {
                 MOTION_FORMAT_ENUM.value,
                 MTLPixelFormat.Depth32Float.value
         );
+        // Do NOT cache dimensions on failure: leaving cachedInputWidth etc.
+        // stale would make the early-return guard above skip recreation on
+        // every subsequent frame, permanently pinning temporalScaler at NULL.
+        // MemorySegment.NULL is a non-null Java object, so != null checks
+        // would wrongly treat the failed handle as valid. Reset to Java null
+        // so all checks (both isNullHandle and != null) agree it's invalid.
+        if (MetalNativeBridge.isNullHandle(temporalScaler)) {
+            temporalScaler = null;
+            Metallum.LOGGER.warn(
+                    "[MetalFX] temporal scaler creation failed for {}x{} -> {}x{}; will retry next frame",
+                    inW, inH, outW, outH);
+            return;
+        }
         cachedInputWidth = inW;
         cachedInputHeight = inH;
         cachedOutputWidth = outW;
@@ -525,18 +568,18 @@ public final class MetalFxPipeline {
     }
 
     private void ensureSpatialScaler(int inW, int inH, int outW, int outH) {
-        if (spatialScaler != null
+        if (!MetalNativeBridge.isNullHandle(spatialScaler)
                 && cachedInputWidth == inW && cachedInputHeight == inH
                 && cachedOutputWidth == outW && cachedOutputHeight == outH) {
             return;
         }
-        if (spatialScaler != null) {
+        if (!MetalNativeBridge.isNullHandle(spatialScaler)) {
             releaseLater(spatialScaler);
             spatialScaler = null;
         }
         // Dimensions changed: the temporal scaler (if cached) is also stale.
         // Release it so the next ensureTemporalScaler rebuilds at the new size.
-        if (temporalScaler != null
+        if (!MetalNativeBridge.isNullHandle(temporalScaler)
                 && (cachedInputWidth != inW || cachedInputHeight != inH
                 || cachedOutputWidth != outW || cachedOutputHeight != outH)) {
             releaseLater(temporalScaler);
@@ -549,6 +592,17 @@ public final class MetalFxPipeline {
                 inW, inH, outW, outH,
                 COLOR_FORMAT, COLOR_FORMAT
         );
+        // Do NOT cache dimensions on failure: see ensureTemporalScaler for
+        // the full rationale. Resetting to Java null makes encodeSpatialFallback
+        // fall through to `return sourceTexture` (low-res direct present),
+        // which is strictly better than presenting an unwritten upscaled texture.
+        if (MetalNativeBridge.isNullHandle(spatialScaler)) {
+            spatialScaler = null;
+            Metallum.LOGGER.warn(
+                    "[MetalFX] spatial scaler creation failed for {}x{} -> {}x{}; will retry next frame",
+                    inW, inH, outW, outH);
+            return;
+        }
         cachedInputWidth = inW;
         cachedInputHeight = inH;
         cachedOutputWidth = outW;
@@ -564,12 +618,20 @@ public final class MetalFxPipeline {
             releaseLater(upscaledColorTexture);
             upscaledColorTexture = null;
         }
+        // RenderTarget usage is required so metallum_fx_clear_texture can
+        // attach the texture to a render pass (loadAction = .clear) before
+        // each spatial encode. Without it, the clear fails and stale
+        // frame data in the Private-storage texture causes per-pixel
+        // flicker on static UI elements when temporal upscaling is off
+        // (the spatial scaler is single-frame and has no history to
+        // stabilize the output). See encodeSpatialFallback for the clear.
+        long usage = USAGE_SHADER_RW | MTLTextureUsage.RenderTarget.value;
         upscaledColorTexture = MetalNativeBridge.metallum_create_texture_2d(
                 deviceHandle(),
                 MTLPixelFormat.BGRA8Unorm,
                 width, height,
                 1L, 1L, 0L,
-                USAGE_SHADER_RW,
+                usage,
                 MTLStorageMode.Private,
                 "metallum-fx-upscaled"
         );
@@ -679,15 +741,15 @@ public final class MetalFxPipeline {
      * Releases all native resources. Called when the MetalDevice is closed.
      */
     public void close() {
-        if (spatialScaler != null) {
+        if (!MetalNativeBridge.isNullHandle(spatialScaler)) {
             MetalNativeBridge.metallum_release_object(spatialScaler);
             spatialScaler = null;
         }
-        if (temporalScaler != null) {
+        if (!MetalNativeBridge.isNullHandle(temporalScaler)) {
             MetalNativeBridge.metallum_release_object(temporalScaler);
             temporalScaler = null;
         }
-        if (frameInterpolator != null) {
+        if (!MetalNativeBridge.isNullHandle(frameInterpolator)) {
             MetalNativeBridge.metallum_release_object(frameInterpolator);
             frameInterpolator = null;
         }
