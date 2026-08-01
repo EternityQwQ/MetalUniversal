@@ -12,7 +12,10 @@ on:
       - 'v*'
 
 permissions:
-  contents: write
+  contents: read
+
+# Tag 命名约定：每次 BUG 修复构建请使用详细 tag，格式 `v<版本>-fix-<bug简述>`，
+# 例如 `v1.0.4-fix-empty-submit`，run-name 会显示该 tag，便于区分每次修复内容。
 
 jobs:
   build:
@@ -36,58 +39,3 @@ jobs:
         with:
           name: metallum
           path: build/libs/
-
-  publish:
-    needs: build
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    steps:
-      - name: checkout repository
-        uses: actions/checkout@v6
-
-      - name: download build artifacts
-        uses: actions/download-artifact@v5
-        with:
-          name: metallum
-          path: release-artifacts
-
-      - name: resolve release metadata
-        id: meta
-        shell: bash
-        run: |
-          set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
-          MINECRAFT_VERSION="$(sed -n 's/^minecraft_version=//p' gradle.properties | head -n1)"
-          MAIN_JAR="$(find release-artifacts -maxdepth 1 -type f -name '*.jar' ! -name '*-dev.jar' ! -name '*-sources.jar' | head -n1)"
-          if [ -z "${MAIN_JAR}" ]; then
-            echo "Could not find main release jar in release-artifacts" >&2
-            exit 1
-          fi
-          if [ -z "${MINECRAFT_VERSION}" ]; then
-            echo "Could not resolve minecraft_version from gradle.properties" >&2
-            exit 1
-          fi
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "minecraft_version=${MINECRAFT_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "main_jar=${MAIN_JAR}" >> "$GITHUB_OUTPUT"
-
-      - name: publish to Modrinth
-        uses: cloudnode-pro/modrinth-publish@v2
-        with:
-          token: ${{ secrets.MODRINTH_TOKEN }}
-          project: w79ASAJD
-          version: ${{ steps.meta.outputs.version }}
-          channel: alpha
-          loaders: fabric
-          game-versions: ${{ steps.meta.outputs.minecraft_version }}
-          files: ${{ steps.meta.outputs.main_jar }}
-          dependencies: |
-            [{ "project_id": "AANobbMI", "dependency_type": "optional" }]
-
-      - name: create GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
-          generate_release_notes: true
-          files: release-artifacts/*
