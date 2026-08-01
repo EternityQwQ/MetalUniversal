@@ -56,7 +56,7 @@ final class MetalDevice implements GpuDeviceBackend {
             return true;
         }
     };
-    private ShaderSource activeShaderSource;
+    private final ShaderSource defaultShaderSource;
 
     MetalDevice(
             final ShaderSource defaultShaderSource,
@@ -66,7 +66,7 @@ final class MetalDevice implements GpuDeviceBackend {
             final String deviceName,
             final MemorySegment cocoaView
     ) {
-        this.activeShaderSource = defaultShaderSource;
+        this.defaultShaderSource = defaultShaderSource;
         this.debugOptions = debugOptions;
         this.metalDeviceHandle = metalDeviceHandle;
         this.metalLayer = metalLayer;
@@ -170,10 +170,7 @@ final class MetalDevice implements GpuDeviceBackend {
 
     @Override
     public @NonNull CompiledRenderPipeline precompilePipeline(final @NonNull RenderPipeline pipeline, @Nullable final ShaderSource shaderSource) {
-        ShaderSource effectiveSource = shaderSource == null ? this.activeShaderSource : shaderSource;
-        if (shaderSource != null) {
-            this.activeShaderSource = shaderSource;
-        }
+        ShaderSource effectiveSource = shaderSource == null ? this.defaultShaderSource : shaderSource;
         return this.compiledPipelines.computeIfAbsent(pipeline, p -> MetalCrossShaderCompiler.compile(this, p, effectiveSource));
     }
 
@@ -272,7 +269,7 @@ final class MetalDevice implements GpuDeviceBackend {
     }
 
     MetalCompiledRenderPipeline getOrCompilePipeline(final RenderPipeline pipeline) {
-        return this.compiledPipelines.computeIfAbsent(pipeline, p -> MetalCrossShaderCompiler.compile(this, p, this.activeShaderSource));
+        return this.compiledPipelines.computeIfAbsent(pipeline, p -> MetalCrossShaderCompiler.compile(this, p, this.defaultShaderSource));
     }
 
     IntermediaryShaderModule getOrCompileShader(final Identifier id, final ShaderType type, final ShaderDefines defines, final ShaderSource shaderSource) {
