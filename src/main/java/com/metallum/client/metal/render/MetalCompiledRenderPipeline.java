@@ -1,5 +1,6 @@
 package com.metallum.client.metal.render;
 
+import com.metallum.Metallum;
 import com.metallum.client.metal.render.bridge.MetalNativeBridge;
 import com.metallum.client.metal.render.mtl.*;
 import com.mojang.blaze3d.GpuFormat;
@@ -107,8 +108,10 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
         MemorySegment fragmentFunction = device.getOrCompileFunction(fragmentMsl, fragmentEntryPoint);
 
         try (MTLVertexDescriptor vertexDescriptor = buildVertexDescriptor(info, this.firstAvailableVertexBufferSlot)) {
-            this.withoutDepthPipeline = createPipeline(device, info, vertexFunction, fragmentFunction, vertexDescriptor, colorFormat, MTLPixelFormat.Invalid);
             this.withDepthPipeline = createPipeline(device, info, vertexFunction, fragmentFunction, vertexDescriptor, colorFormat, MTLPixelFormat.Depth32Float);
+            this.withoutDepthPipeline = depthStencilState == null
+                    ? createPipeline(device, info, vertexFunction, fragmentFunction, vertexDescriptor, colorFormat, MTLPixelFormat.Invalid)
+                    : MemorySegment.NULL;
         }
     }
 
@@ -149,16 +152,20 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
                 pipelineDesc.disableBlending(writeMask);
             }
 
-            return MetalNativeBridge.metallum_MTLDevice_makeRenderPipelineState(
+            MemorySegment pipeline = MetalNativeBridge.metallum_MTLDevice_makeRenderPipelineState(
                     device.metalDeviceHandle(),
                     pipelineDesc.handle()
             );
+            if (MetalNativeBridge.isNullHandle(pipeline)) {
+                Metallum.LOGGER.error("[metallum] Pipeline {} failed to build with depth format {}", info.getLocation(), depthFormat);
+            }
+            return pipeline;
         }
     }
 
     @Override
     public boolean isValid() {
-        return !MetalNativeBridge.isNullHandle(this.withoutDepthPipeline);
+        return !MetalNativeBridge.isNullHandle(this.withDepthPipeline);
     }
 
     List<ResourceBinding> resources() {
@@ -191,7 +198,7 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
     }
 
     MemorySegment getNativePipeline(final boolean useDepth) {
-        return useDepth && !MetalNativeBridge.isNullHandle(this.withDepthPipeline) ? this.withDepthPipeline : this.withoutDepthPipeline;
+        return useDepth ? this.withDepthPipeline : this.withoutDepthPipeline;
     }
 
     MTLCullMode cullMode() {
