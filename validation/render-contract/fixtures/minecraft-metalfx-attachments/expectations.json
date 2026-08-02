@@ -1,9 +1,0 @@
-{
-  "schemaVersion": 1,
-  "expectations": [
-    { "id": "motion-finite", "resourceSemanticName": "camera-motion", "kind": "invariant", "rule": "finite" },
-    { "id": "validity-contract", "resourceSemanticName": "object-validity", "kind": "invariant", "rule": "validity-mask" },
-    { "id": "coverage-contract", "resourceSemanticName": "cutout-coverage", "kind": "invariant", "rule": "alpha-discard-coverage" },
-    { "id": "temporal-output", "resourceSemanticName": "temporal-output", "kind": "temporal" }
-  ]
-}

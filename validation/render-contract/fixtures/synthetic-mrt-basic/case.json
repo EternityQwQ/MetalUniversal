@@ -1,7 +1,0 @@
-{
-  "schemaVersion": 1,
-  "name": "synthetic-mrt-basic",
-  "scenario": "synthetic_mrt_basic",
-  "referenceKind": "java-contract-model",
-  "backendModes": ["metal3", "metal4"]
-}

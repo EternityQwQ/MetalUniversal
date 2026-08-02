@@ -1,7 +1,0 @@
-{
-  "schemaVersion": 1,
-  "expectations": [
-    { "id": "color0-exact", "resourceSemanticName": "color0", "kind": "exact" },
-    { "id": "color1-exact", "resourceSemanticName": "color1", "kind": "exact" }
-  ]
-}

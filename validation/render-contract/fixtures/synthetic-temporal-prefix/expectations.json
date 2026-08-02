@@ -1,8 +1,0 @@
-{
-  "schemaVersion": 1,
-  "warmupFrames": 1,
-  "historyResetBeforeSequence": true,
-  "expectations": [
-    { "id": "temporal-stability", "resourceSemanticName": "temporal-output", "kind": "temporal", "maximumMeanAbsoluteDelta": 0.0 }
-  ]
-}

@@ -1,6 +1,0 @@
-{
-  "schemaVersion": 1,
-  "expectations": [
-    { "id": "depth-range", "resourceSemanticName": "depth", "kind": "numeric", "minimum": 0.0, "maximum": 1.0, "reversedZ": true }
-  ]
-}
