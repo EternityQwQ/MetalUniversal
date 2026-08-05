@@ -1,7 +1,23 @@
+buildscript {
+	repositories {
+		maven { url "https://maven.fabricmc.net/" }
+		mavenCentral()
+		gradlePluginPortal()
+	}
+	dependencies {
+		// 稳定版 loom 的 plugin marker 未发布到任何公共仓库（Fabric maven / Maven
+		// Central 均无，portal 委托 central），故用 buildscript classpath 锁定版本。
+		// 1.14.10 是对 1.21.11 友好的最后一代（1.16+ 的 classtweaker 强制 AW 为
+		// official 命名空间，会拒绝 Sodium 0.8.13 的 named AW）。
+		classpath "net.fabricmc:fabric-loom:${loom_version}"
+	}
+}
+
 plugins {
-	id 'net.fabricmc.fabric-loom' version "${loom_version}"
 	id 'maven-publish'
 }
+
+apply plugin: "fabric-loom"
 
 version = project.mod_version
 group = project.maven_group
@@ -15,10 +31,31 @@ repositories {
 }
 
 dependencies {
+	// 1.21.11 仍需显式 mappings（loom 1.14+ 无默认值；26.2 去混淆后 loom 1.16 才不需要）
+	mappings loom.officialMojangMappings()
 	minecraft "com.mojang:minecraft:${project.minecraft_version}"
 	
+	// modImplementation 触发 loom 的 mod 处理管线（Sodium 的 intermediary AW 需转换；
+	// 26.2 的 sodium 0.9.x AW 已 official 化，旧 `implementation` 写法才不报错）
 	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
 	implementation "maven.modrinth:sodium:${project.sodium_version}"
+
+	// 1.21.11 的 MC 依赖树不含 lwjgl-vulkan（26.2 含，MetalRenderPass 的 indirect draw
+	// 结构体 VkDraw*IndirectCommand 需要它）；版本对齐 MC 1.21.11 的 LWJGL 3.3.4
+	implementation "org.lwjgl:lwjgl-vulkan:3.3.3"
+
+	// 1.21.11 的 MC 依赖树也不含 shaderc/spvc（26.2 的 Vulkan 后端才带）：
+	// MetalCrossShaderCompiler 的 GLSL → SPIR-V → MSL 管线直接依赖 LWJGL 绑定。
+	// natives-macos-arm64 供 macOS 运行（iOS 走 Configuration.SPVC_LIBRARY_NAME / dlsym）。
+	implementation "org.lwjgl:lwjgl-shaderc:3.3.3"
+	implementation "org.lwjgl:lwjgl-spvc:3.3.3"
+	runtimeOnly "org.lwjgl:lwjgl-shaderc:3.3.3:natives-macos-arm64"
+	runtimeOnly "org.lwjgl:lwjgl-spvc:3.3.3:natives-macos-arm64"
+
+	// loom 1.14 不自动注入 mixin 编译支持（1.16+ 才自动）：显式声明
+	// fabric-mixin-compile-extensions 提供 MixinAnnotationProcessor，sponge-mixin 提供编译期类
+	annotationProcessor "net.fabricmc:fabric-mixin-compile-extensions:0.6.0"
+	compileOnly "net.fabricmc:sponge-mixin:0.17.3+mixin.0.8.7"
 }
 
 processResources {

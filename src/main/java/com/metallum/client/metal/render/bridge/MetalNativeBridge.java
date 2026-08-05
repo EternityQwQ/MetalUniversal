@@ -155,6 +155,7 @@ public final class MetalNativeBridge {
             createSystemDefaultDevice = downcall(lookup, "metallum_create_system_default_device", FunctionDescriptor.of(ValueLayout.ADDRESS));
             copyDeviceName = downcall(lookup, "metallum_copy_device_name", FunctionDescriptor.of(INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, LONG));
             NSWindowBackingScaleFactor = downcall(lookup, "metallum_NSWindow_backingScaleFactor", FunctionDescriptor.of(DOUBLE, ValueLayout.ADDRESS));
+            NSWindowContentView = downcall(lookup, "metallum_NSWindow_contentView", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
             createMetalLayer = downcall(lookup, "metallum_create_metal_layer", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, DOUBLE));
             NSViewSetMetalLayer = downcall(lookup, "metallum_NSView_setMetalLayer", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
             NSViewClearLayer = downcall(lookup, "metallum_NSView_clearLayer", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
@@ -523,6 +524,7 @@ public final class MetalNativeBridge {
     private static final MethodHandle createSystemDefaultDevice;
     private static final MethodHandle copyDeviceName;
     private static final MethodHandle NSWindowBackingScaleFactor;
+    private static final MethodHandle NSWindowContentView;
     private static final MethodHandle createMetalLayer;
     private static final MethodHandle NSViewSetMetalLayer;
     private static final MethodHandle NSViewClearLayer;
@@ -625,6 +627,18 @@ public final class MetalNativeBridge {
             return (double) NSWindowBackingScaleFactor.invokeExact(segment(window));
         } catch (Throwable throwable) {
             throw bridgeFailure("metallum_NSWindow_backingScaleFactor", throwable);
+        }
+    }
+
+    /**
+     * LWJGL 3.3.3（MC 1.21.11）无 GLFWNativeCocoa.glfwGetCocoaView（GLFW 3.5 API），
+     * 经 NSWindow.contentView 获取内容视图。
+     */
+    public static MemorySegment metallum_NSWindow_contentView(final MemorySegment window) {
+        try {
+            return (MemorySegment) NSWindowContentView.invokeExact(segment(window));
+        } catch (Throwable throwable) {
+            throw bridgeFailure("metallum_NSWindow_contentView", throwable);
         }
     }
 

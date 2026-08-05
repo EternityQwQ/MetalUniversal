@@ -2,19 +2,20 @@ package com.metallum.client.metal.render;
 
 import com.metallum.client.metal.render.bridge.MetalNativeBridge;
 import com.metallum.client.metal.render.mtl.MTLCommandQueue;
-import com.mojang.blaze3d.GpuFormat;
 import com.mojang.blaze3d.buffers.GpuBuffer;
 import com.mojang.blaze3d.pipeline.CompiledRenderPipeline;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.preprocessor.GlslPreprocessor;
-import com.mojang.blaze3d.shaders.GpuDebugOptions;
 import com.mojang.blaze3d.shaders.ShaderSource;
 import com.mojang.blaze3d.shaders.ShaderType;
-import com.mojang.blaze3d.systems.*;
-import com.mojang.blaze3d.textures.*;
-import com.mojang.blaze3d.vulkan.glsl.GlslCompiler;
-import com.mojang.blaze3d.vulkan.glsl.IntermediaryShaderModule;
-import com.mojang.blaze3d.vulkan.glsl.ShaderCompileException;
+import com.mojang.blaze3d.systems.CommandEncoder;
+import com.mojang.blaze3d.systems.GpuDevice;
+import com.mojang.blaze3d.textures.AddressMode;
+import com.mojang.blaze3d.textures.FilterMode;
+import com.mojang.blaze3d.textures.GpuSampler;
+import com.mojang.blaze3d.textures.GpuTexture;
+import com.mojang.blaze3d.textures.GpuTextureView;
+import com.mojang.blaze3d.textures.TextureFormat;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.client.renderer.ShaderDefines;
@@ -29,18 +30,17 @@ import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 @Environment(EnvType.CLIENT)
-final class MetalDevice implements GpuDeviceBackend {
+final class MetalDevice implements GpuDevice {
     private static final Pattern BLOCK_COMMENTS = Pattern.compile("(?s)/\\*.*?\\*/");
     private static final Pattern LINE_COMMENTS = Pattern.compile("(?m)//[^\\n]*");
     private final MemorySegment metalDeviceHandle;
     private final MemorySegment metalLayer;
     private final MemorySegment cocoaView;
-    private final GpuDebugOptions debugOptions;
+    private final String deviceName;
     private final MetalCommandEncoder commandEncoder;
-    private final DeviceInfo deviceInfo;
     public final MTLCommandQueue commandQueue;
     private final Map<RenderPipeline, MetalCompiledRenderPipeline> compiledPipelines = new IdentityHashMap<>();
-    private final Map<ShaderCompilationKey, IntermediaryShaderModule> shaderCache = new HashMap<>();
+    private final Map<ShaderCompilationKey, String> shaderSourceCache = new HashMap<>();
     private final Map<MslFunctionKey, MemorySegment> functionCache = new HashMap<>();
     private static final int MAX_POOLED_BUFFER_BUCKETS = 32;
     private static final int MAX_POOLED_BUFFERS_PER_SIZE = 8;
@@ -56,35 +56,29 @@ final class MetalDevice implements GpuDeviceBackend {
             return true;
         }
     };
+    @Nullable
     private final ShaderSource defaultShaderSource;
 
     MetalDevice(
-            final ShaderSource defaultShaderSource,
-            final GpuDebugOptions debugOptions,
             final MemorySegment metalDeviceHandle,
             final MemorySegment metalLayer,
             final String deviceName,
-            final MemorySegment cocoaView
+            final MemorySegment cocoaView,
+            @Nullable final ShaderSource defaultShaderSource
     ) {
-        this.defaultShaderSource = defaultShaderSource;
-        this.debugOptions = debugOptions;
         this.metalDeviceHandle = metalDeviceHandle;
         this.metalLayer = metalLayer;
         this.cocoaView = cocoaView;
-        MetalNativeBridge.metallum_set_debug_labels_enabled(this.useLabels());
+        this.deviceName = deviceName;
+        this.defaultShaderSource = defaultShaderSource;
+        MetalNativeBridge.metallum_set_debug_labels_enabled(false);
         this.commandQueue = MTLCommandQueue.create(metalDeviceHandle);
         MetalNativeBridge.metallum_init_pipelines(metalDeviceHandle);
         this.commandEncoder = new MetalCommandEncoder(this);
-        this.deviceInfo = buildDeviceInfo(deviceName);
     }
 
     @Override
-    public @NonNull GpuSurfaceBackend createSurface(final long windowHandle) {
-        return new MetalSurface(this, this.metalLayer);
-    }
-
-    @Override
-    public @NonNull MetalCommandEncoder createCommandEncoder() {
+    public @NonNull CommandEncoder createCommandEncoder() {
         return this.commandEncoder;
     }
 
@@ -104,7 +98,7 @@ final class MetalDevice implements GpuDeviceBackend {
     public @NonNull GpuTexture createTexture(
             @Nullable final Supplier<String> label,
             @GpuTexture.Usage final int usage,
-            final @NonNull GpuFormat format,
+            final @NonNull TextureFormat format,
             final int width,
             final int height,
             final int depthOrLayers,
@@ -117,7 +111,7 @@ final class MetalDevice implements GpuDeviceBackend {
     public @NonNull GpuTexture createTexture(
             @Nullable final String label,
             @GpuTexture.Usage final int usage,
-            final @NonNull GpuFormat format,
+            final @NonNull TextureFormat format,
             final int width,
             final int height,
             final int depthOrLayers,
@@ -161,16 +155,19 @@ final class MetalDevice implements GpuDeviceBackend {
 
     @Override
     public boolean isDebuggingEnabled() {
-        return this.debugOptions.logLevel() > 0 || this.debugOptions.useLabels() || this.debugOptions.useValidationLayers();
+        return false;
     }
 
     boolean useLabels() {
-        return this.debugOptions.useLabels();
+        return false;
     }
 
     @Override
-    public @NonNull CompiledRenderPipeline precompilePipeline(final @NonNull RenderPipeline pipeline, @Nullable final ShaderSource shaderSource) {
+    public @NonNull CompiledRenderPipeline precompilePipeline(final @NonNull RenderPipeline pipeline, final @Nullable ShaderSource shaderSource) {
         ShaderSource effectiveSource = shaderSource == null ? this.defaultShaderSource : shaderSource;
+        if (effectiveSource == null) {
+            throw new IllegalStateException("No shader source available for pipeline " + pipeline.getLocation());
+        }
         return this.compiledPipelines.computeIfAbsent(pipeline, p -> MetalCrossShaderCompiler.compile(this, p, effectiveSource));
     }
 
@@ -179,8 +176,7 @@ final class MetalDevice implements GpuDeviceBackend {
         this.waitForSubmittedGpuWork();
         this.compiledPipelines.values().forEach(MetalCompiledRenderPipeline::close);
         this.compiledPipelines.clear();
-        this.shaderCache.values().forEach(IntermediaryShaderModule::close);
-        this.shaderCache.clear();
+        this.shaderSourceCache.clear();
         for (MemorySegment function : this.functionCache.values()) {
             if (!MetalNativeBridge.isNullHandle(function)) {
                 MetalNativeBridge.metallum_release_object(function);
@@ -204,26 +200,62 @@ final class MetalDevice implements GpuDeviceBackend {
     }
 
     @Override
-    public @NonNull GpuQueryPool createTimestampQueryPool(final int size) {
-        return new MetalGpuQueryPool(size);
+    public @NonNull String getImplementationInformation() {
+        return this.deviceName + " (" + this.getVersion() + ")";
     }
 
     @Override
-    public long getTimestampNow() {
-        return System.nanoTime();
+    public @NonNull String getVendor() {
+        return "Apple";
     }
 
     @Override
-    public @NonNull DeviceInfo getDeviceInfo() {
-        return this.deviceInfo;
+    public @NonNull String getBackendName() {
+        return "Metal";
+    }
+
+    @Override
+    public @NonNull String getVersion() {
+        String osVersion = System.getProperty("os.version", "").trim();
+        String platformName = MetalNativeBridge.isIOS() ? "iOS" : "macOS";
+        return platformName + " " + osVersion;
+    }
+
+    @Override
+    public @NonNull String getRenderer() {
+        return this.deviceName;
+    }
+
+    @Override
+    public int getMaxTextureSize() {
+        return 16384;
+    }
+
+    @Override
+    public int getUniformOffsetAlignment() {
+        return 256;
+    }
+
+    @Override
+    public @NonNull List<String> getEnabledExtensions() {
+        return List.of("CAMetalLayer", "MTLDevice");
+    }
+
+    @Override
+    public int getMaxSupportedAnisotropy() {
+        return 16;
     }
 
     MemorySegment metalDeviceHandle() {
         return this.metalDeviceHandle;
     }
 
+    MemorySegment metalLayer() {
+        return this.metalLayer;
+    }
+
     long maxBufferAllocationSize() {
-        return this.deviceInfo.limits().maxMemoryAllocationSize();
+        return MetalNativeBridge.MTLDevice_maxMemoryAllocationSize(metalDeviceHandle);
     }
 
     void waitForSubmittedGpuWork() {
@@ -272,19 +304,18 @@ final class MetalDevice implements GpuDeviceBackend {
         return this.compiledPipelines.computeIfAbsent(pipeline, p -> MetalCrossShaderCompiler.compile(this, p, this.defaultShaderSource));
     }
 
-    IntermediaryShaderModule getOrCompileShader(final Identifier id, final ShaderType type, final ShaderDefines defines, final ShaderSource shaderSource) {
+    /**
+     * 1.21.11 的 ShaderSource 为接口（get(id, type) 返回 GLSL 源），编译结果以
+     * 字符串缓存，实际 GLSL → SPIR-V → MSL 转换在 MetalCrossShaderCompiler 内完成。
+     */
+    String getOrCompileShaderSource(final Identifier id, final ShaderType type, final ShaderDefines defines, final ShaderSource shaderSource) {
         ShaderCompilationKey key = new ShaderCompilationKey(id, type, defines);
-        return this.shaderCache.computeIfAbsent(key, k -> {
+        return this.shaderSourceCache.computeIfAbsent(key, k -> {
             String source = shaderSource.get(k.id(), k.type());
             if (source == null) {
-                return IntermediaryShaderModule.INVALID;
+                return null;
             }
-            String sourceWithDefines = prepareShaderSource(source, k.defines());
-            try (GlslCompiler glslCompiler = new GlslCompiler()) {
-                return glslCompiler.createIntermediary(k.id().toDebugFileName(), sourceWithDefines, k.type());
-            } catch (ShaderCompileException e) {
-                throw new IllegalStateException("Failed to compile shader " + k.id(), e);
-            }
+            return prepareShaderSource(source, k.defines());
         });
     }
 
@@ -305,28 +336,6 @@ final class MetalDevice implements GpuDeviceBackend {
     }
 
     private record MslFunctionKey(String msl, String entryPoint) {
-    }
-
-    private DeviceInfo buildDeviceInfo(final String deviceName) {
-        DeviceType type = DeviceType.INTEGRATED;
-        Set<String> underlyingExtensions = Set.of("CAMetalLayer", "MTLDevice");
-        String osVersion = System.getProperty("os.version", "").trim();
-        String platformName = MetalNativeBridge.isIOS() ? "iOS" : "macOS";
-        String driverDescription = platformName + " " + osVersion;
-        long maxMemoryAllocationSize = MetalNativeBridge.MTLDevice_maxMemoryAllocationSize(metalDeviceHandle);
-        return new DeviceInfo(
-                deviceName,
-                "Apple",
-                driverDescription,
-                true,
-                "Metal",
-                1.0F,
-                new DeviceLimits(16, 256, 16384, maxMemoryAllocationSize, 0, 1),
-                new DeviceFeatures(false, false, true, true, true, false, true),
-                underlyingExtensions,
-                new HintsAndWorkarounds(false, false),
-                type
-        );
     }
 
     @Nullable

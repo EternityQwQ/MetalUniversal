@@ -66,53 +66,58 @@ public enum MTLVertexFormat {
         this.value = value;
     }
 
-    public static MTLVertexFormat from(final com.mojang.blaze3d.GpuFormat format) {
-        return switch (format) {
-            case R32_FLOAT -> Float;
-            case RG32_FLOAT -> Float2;
-            case RGB32_FLOAT -> Float3;
-            case RGBA32_FLOAT -> Float4;
-            case RGBA8_UNORM -> UChar4Normalized;
-            case RGBA8_UINT -> UChar4;
-            case RG16_UINT -> UShort2;
-            case RG16_UNORM -> UShort2Normalized;
-            case RG16_SINT -> Short2;
-            case RG16_SNORM -> Short2Normalized;
-            case RGBA16_UINT -> UShort4;
-            case RGBA16_SINT -> Short4;
-            case RGBA16_UNORM -> UShort4Normalized;
-            case RGBA16_SNORM -> Short4Normalized;
-            case R32_UINT -> UInt;
-            case RG32_UINT -> UInt2;
-            case RGB32_UINT -> UInt3;
-            case RGBA32_UINT -> UInt4;
-            case R32_SINT -> Int;
-            case RG32_SINT -> Int2;
-            case RGB32_SINT -> Int3;
-            case RGBA32_SINT -> Int4;
-            case R16_FLOAT -> Half;
-            case R16_UINT -> UShort;
-            case R16_SINT -> Short;
-            case R16_UNORM -> UShortNormalized;
-            case R16_SNORM -> ShortNormalized;
-            case R8_UINT -> UChar;
-            case R8_SINT -> Char;
-            case R8_UNORM -> UCharNormalized;
-            case R8_SNORM -> CharNormalized;
-            case RG16_FLOAT -> Half2;
-            case RGBA16_FLOAT -> Half4;
-            case RGBA8_SNORM -> Char4Normalized;
-            case RGBA8_SINT -> Char4;
-            case RGB8_UNORM -> UChar3Normalized;
-            case RGB8_SNORM -> Char3Normalized;
-            case RGB8_UINT -> UChar3;
-            case RGB8_SINT -> Char3;
-            case RGB16_UINT -> UShort3;
-            case RGB16_SINT -> Short3;
-            case RGB16_UNORM -> UShort3Normalized;
-            case RGB16_SNORM -> Short3Normalized;
-            case RGB16_FLOAT -> Half3;
-            default -> Invalid;
+    public static MTLVertexFormat from(final com.mojang.blaze3d.vertex.VertexFormatElement.Type type, final int count) {
+        // 1.21.11 无 GpuFormat：顶点格式由 VertexFormatElement.Type + 分量数推导
+        return switch (type) {
+            case FLOAT -> switch (count) {
+                case 1 -> Float;
+                case 2 -> Float2;
+                case 3 -> Float3;
+                case 4 -> Float4;
+                default -> Invalid;
+            };
+            case UBYTE -> switch (count) {
+                case 1 -> UCharNormalized;
+                case 2 -> UChar2Normalized;
+                case 3 -> UChar3Normalized;
+                case 4 -> UChar4Normalized;
+                default -> Invalid;
+            };
+            case BYTE -> switch (count) {
+                case 1 -> CharNormalized;
+                case 2 -> Char2Normalized;
+                case 3 -> Char3Normalized;
+                case 4 -> Char4Normalized;
+                default -> Invalid;
+            };
+            case USHORT -> switch (count) {
+                case 1 -> UShortNormalized;
+                case 2 -> UShort2Normalized;
+                case 3 -> UShort3Normalized;
+                case 4 -> UShort4Normalized;
+                default -> Invalid;
+            };
+            case SHORT -> switch (count) {
+                case 1 -> ShortNormalized;
+                case 2 -> Short2Normalized;
+                case 3 -> Short3Normalized;
+                case 4 -> Short4Normalized;
+                default -> Invalid;
+            };
+            case UINT -> switch (count) {
+                case 1 -> UInt;
+                case 2 -> UInt2;
+                case 3 -> UInt3;
+                case 4 -> UInt4;
+                default -> Invalid;
+            };
+            case INT -> switch (count) {
+                case 1 -> Int;
+                case 2 -> Int2;
+                case 3 -> Int3;
+                case 4 -> Int4;
+                default -> Invalid;
+            };
         };
     }
 }

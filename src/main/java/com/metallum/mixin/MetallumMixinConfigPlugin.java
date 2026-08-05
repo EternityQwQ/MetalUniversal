@@ -1,5 +1,6 @@
 package com.metallum.mixin;
 
+import com.metallum.client.metal.render.bridge.MetalNativeBridge;
 import net.fabricmc.loader.api.FabricLoader;
 import org.objectweb.asm.tree.ClassNode;
 import org.spongepowered.asm.mixin.extensibility.IMixinConfigPlugin;
@@ -13,18 +14,19 @@ import java.util.Locale;
 import java.util.Set;
 
 public final class MetallumMixinConfigPlugin implements IMixinConfigPlugin {
-    private static final String PREFERRED_GRAPHICS_API_MIXIN = "com.metallum.mixin.render.PreferredGraphicsApiMixin";
-    private static final String PREFERRED_GRAPHICS_BACKEND_OPTION = "preferredGraphicsBackend";
-    private static final String DEFAULT_GRAPHICS_BACKEND = "\"default\"";
+    private static final String RENDER_SYSTEM_DEVICE_MIXIN = "com.metallum.mixin.render.RenderSystemDeviceMixin";
 
-    private boolean isMacOs;
-    private boolean isDefaultGraphicsApi;
+    private boolean isMetalHost;
 
     @Override
     public void onLoad(String mixinPackage) {
         String osName = System.getProperty("os.name", "");
-        this.isMacOs = osName.toLowerCase(Locale.ROOT).contains("mac");
-        this.isDefaultGraphicsApi = isDefaultGraphicsApiSelected();
+        // 26.2 时代按 os.name 含 mac 判定；1.21.11 无 PreferredGraphicsApi 后端选择，
+        // mixin 恒启用（Metal 后端总是接管），平台判定复用 MetalNativeBridge.isIOS 的完整链路
+        // （iOS JVM 可能谎报 os.name，必须走沙箱路径等信号）。
+        this.isMetalHost = osName.toLowerCase(Locale.ROOT).contains("mac")
+                || osName.toLowerCase(Locale.ROOT).contains("ios")
+                || MetalNativeBridge.isIOS();
     }
 
     @Override
@@ -34,13 +36,13 @@ public final class MetallumMixinConfigPlugin implements IMixinConfigPlugin {
 
     @Override
     public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
-        if (!this.isMacOs) {
+        if (!this.isMetalHost) {
             return false;
         }
         if (mixinClassName.contains(".mixin.sodium.")) {
             return FabricLoader.getInstance().isModLoaded("sodium");
         }
-        return PREFERRED_GRAPHICS_API_MIXIN.equals(mixinClassName) || this.isDefaultGraphicsApi;
+        return RENDER_SYSTEM_DEVICE_MIXIN.equals(mixinClassName);
     }
 
     @Override
@@ -58,24 +60,5 @@ public final class MetallumMixinConfigPlugin implements IMixinConfigPlugin {
 
     @Override
     public void postApply(String targetClassName, ClassNode targetClass, String mixinClassName, IMixinInfo mixinInfo) {
-    }
-
-    private static boolean isDefaultGraphicsApiSelected() {
-        Path optionsFile = FabricLoader.getInstance().getGameDir().resolve("options.txt");
-        try {
-            for (String line : Files.readAllLines(optionsFile)) {
-                int separator = line.indexOf(':');
-                if (separator <= 0) {
-                    continue;
-                }
-                if (PREFERRED_GRAPHICS_BACKEND_OPTION.equals(line.substring(0, separator))) {
-                    String value = line.substring(separator + 1).toLowerCase(Locale.ROOT);
-                    return DEFAULT_GRAPHICS_BACKEND.equals(value);
-                }
-            }
-        } catch (IOException ignored) {
-        }
-
-        return true;
     }
 }

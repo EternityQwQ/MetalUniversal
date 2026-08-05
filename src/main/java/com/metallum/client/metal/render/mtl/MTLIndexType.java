@@ -1,6 +1,6 @@
 package com.metallum.client.metal.render.mtl;
 
-import com.mojang.blaze3d.IndexType;
+import com.mojang.blaze3d.vertex.VertexFormat;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 
@@ -17,7 +17,7 @@ public enum MTLIndexType {
         this.bytes = bytes;
     }
 
-    public static MTLIndexType from(final IndexType indexType) {
-        return indexType == IndexType.INT ? UInt32 : UInt16;
+    public static MTLIndexType from(final VertexFormat.IndexType indexType) {
+        return indexType == VertexFormat.IndexType.INT ? UInt32 : UInt16;
     }
 }

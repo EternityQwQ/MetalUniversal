@@ -526,6 +526,19 @@ public func metallum_NSWindow_backingScaleFactor(_ window: MetallumWindow) -> Do
     #endif
 }
 
+// LWJGL 3.3.3（MC 1.21.11）的 GLFWNativeCocoa 无 glfwGetCocoaView（GLFW 3.5 API，
+// 26.2 的 LWJGL 3.4.1 才有）。macOS 上 GLFW 窗口的内容视图需经 NSWindow.contentView
+// 获取：swiftc 直出，避免 Java 侧依赖缺失的 GLFW 绑定。
+@_cdecl("metallum_NSWindow_contentView")
+public func metallum_NSWindow_contentView(_ window: MetallumWindow) -> UnsafeMutableRawPointer? {
+    #if os(macOS)
+    return unretainedPointer(window.contentView)
+    #elseif os(iOS)
+    // iOS 路径不使用（走 metallum_ios_find_surface_view）
+    return nil
+    #endif
+}
+
 @_cdecl("metallum_create_metal_layer")
 public func metallum_create_metal_layer(
     _ device: MTLDevice,

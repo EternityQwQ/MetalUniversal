@@ -24,12 +24,10 @@ final class MetalPipelineSupport {
 
     static List<String> vertexAttributeNames(final RenderPipeline pipeline) {
         List<String> names = new ArrayList<>();
-        for (VertexFormat binding : pipeline.getVertexFormatBindings()) {
-            if (binding != null) {
-                for (VertexFormatElement element : binding.getElements()) {
-                    names.add(element.name());
-                }
-            }
+        // 1.21.11 单 VertexFormat（26.2 的 getVertexFormatBindings 为多绑定列表）
+        VertexFormat binding = pipeline.getVertexFormat();
+        for (VertexFormatElement element : binding.getElements()) {
+            names.add(binding.getElementName(element));
         }
         return names;
     }

@@ -20,16 +20,13 @@ public enum MTLCompareFunction {
         this.value = value;
     }
 
-    public static MTLCompareFunction from(final com.mojang.blaze3d.platform.CompareOp op) {
+    public static MTLCompareFunction from(final com.mojang.blaze3d.platform.DepthTestFunction op) {
         return switch (op) {
-            case NEVER_PASS -> Never;
-            case LESS_THAN -> Less;
-            case EQUAL -> Equal;
-            case LESS_THAN_OR_EQUAL -> LessEqual;
-            case GREATER_THAN -> Greater;
-            case NOT_EQUAL -> NotEqual;
-            case GREATER_THAN_OR_EQUAL -> GreaterEqual;
-            case ALWAYS_PASS -> Always;
+            case NO_DEPTH_TEST -> Always;
+            case EQUAL_DEPTH_TEST -> Equal;
+            case LESS_DEPTH_TEST -> Less;
+            case LEQUAL_DEPTH_TEST -> LessEqual;
+            case GREATER_DEPTH_TEST -> Greater;
         };
     }
 }

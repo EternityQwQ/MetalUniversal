@@ -28,7 +28,7 @@ class MetalGpuBuffer extends GpuBuffer {
     private ByteBuffer storage;
     private boolean closed;
 
-    MetalGpuBuffer(final MetalDevice device, @GpuBuffer.Usage final int usage, final long size) {
+    MetalGpuBuffer(final MetalDevice device, final int usage, final long size) {
         super(usage, size);
         this.device = device;
 
@@ -80,7 +80,7 @@ class MetalGpuBuffer extends GpuBuffer {
         }
     }
 
-    MetalGpuBuffer(final MetalDevice device, @GpuBuffer.Usage final int usage, final long size, final @Nullable MemorySegment wrappedHandle) {
+    MetalGpuBuffer(final MetalDevice device, final int usage, final long size, final @Nullable MemorySegment wrappedHandle) {
         super(usage, size);
         this.device = device;
         this.cpuAccessible = false;
@@ -152,40 +152,21 @@ class MetalGpuBuffer extends GpuBuffer {
         }
     }
 
-    @Override
-    public GpuBufferSlice.@NonNull MappedView map(final long offset, final long length, final boolean read, final boolean write) {
-        if (this.isClosed()) {
-            throw new IllegalStateException("Buffer already closed");
-        }
-        if (!read && !write) {
-            throw new IllegalArgumentException("At least read or write must be true");
-        }
-        if (read && (this.usage() & GpuBuffer.USAGE_MAP_READ) == 0) {
-            throw new IllegalStateException("Buffer is not readable");
-        }
-        if (write && (this.usage() & GpuBuffer.USAGE_MAP_WRITE) == 0) {
-            throw new IllegalStateException("Buffer is not writable");
-        }
-        ByteBuffer mapped = this.sliceStorage(offset, length);
-        return new GpuBufferSlice.MappedView(this.slice(offset, length), mapped, () -> {
-        });
-    }
-
     public int getUsage() {
         return this.usage();
     }
 
-    private static boolean isCpuAccessible(@GpuBuffer.Usage final int usage) {
+    private static boolean isCpuAccessible(final int usage) {
         return (usage & GpuBuffer.USAGE_MAP_READ) != 0
                 || (usage & GpuBuffer.USAGE_MAP_WRITE) != 0
                 || (usage & GpuBuffer.USAGE_HINT_CLIENT_STORAGE) != 0;
     }
 
-    private static boolean isDynamic(@GpuBuffer.Usage final int usage) {
+    private static boolean isDynamic(final int usage) {
         return (usage & GpuBuffer.USAGE_UNIFORM) != 0 && (usage & GpuBuffer.USAGE_COPY_DST) != 0;
     }
 
-    private static long toMtlResourceOptions(@GpuBuffer.Usage final int usage) {
+    private static long toMtlResourceOptions(final int usage) {
         MTLStorageMode storageMode = isCpuAccessible(usage) || isDynamic(usage) ? MTLStorageMode.Shared : MTLStorageMode.Private;
         return MTLResourceOptions.of(storageMode, MTLHazardTrackingMode.Untracked);
     }

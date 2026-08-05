@@ -17,13 +17,9 @@ public enum MTLBlendOperation {
         this.value = value;
     }
 
-    public static MTLBlendOperation from(final com.mojang.blaze3d.platform.BlendOp op) {
-        return switch (op) {
-            case ADD -> Add;
-            case SUBTRACT -> Subtract;
-            case REVERSE_SUBTRACT -> ReverseSubtract;
-            case MIN -> Min;
-            case MAX -> Max;
-        };
+    // 1.21.11 无平台级 BlendOp：BlendFunction 为 record（SourceFactor/DestFactor），
+    // 混合操作固定为 Add（Metal 默认）
+    public static MTLBlendOperation from() {
+        return Add;
     }
 }

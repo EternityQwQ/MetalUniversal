@@ -2,45 +2,26 @@ package com.metallum.client.metal.render;
 
 import com.metallum.Metallum;
 import com.metallum.client.metal.render.bridge.MetalNativeBridge;
-import com.mojang.blaze3d.GLFWErrorCapture;
-import com.mojang.blaze3d.shaders.GpuDebugOptions;
 import com.mojang.blaze3d.shaders.ShaderSource;
-import com.mojang.blaze3d.systems.BackendCreationException;
-import com.mojang.blaze3d.systems.GpuBackend;
-import com.mojang.blaze3d.systems.GpuDevice;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import org.jspecify.annotations.NonNull;
-import org.lwjgl.glfw.GLFW;
+import org.jspecify.annotations.Nullable;
 import org.lwjgl.glfw.GLFWNativeCocoa;
 
 import java.lang.foreign.MemorySegment;
 
+/**
+ * 1.21.11 无 GpuBackend 体系（26.2 的多后端抽象）：GpuDevice 是接口，渲染设备由
+ * RenderSystem 持有。本工厂在 mixin 注入的 device 创建点被调用，产出 MetalDevice。
+ */
 @Environment(EnvType.CLIENT)
-public class MetalBackend implements GpuBackend {
-    @Override
-    public @NonNull String getName() {
-        return "Metal";
+public final class MetalBackend {
+    private MetalBackend() {
     }
 
-    @Override
-    public void setWindowHints() {
-        GLFW.glfwWindowHint(GLFW.GLFW_CLIENT_API, GLFW.GLFW_NO_API);
-    }
-
-    @Override
-    public void handleWindowCreationErrors(final GLFWErrorCapture.Error error) throws BackendCreationException {
-        throw new BackendCreationException(error.toString(), BackendCreationException.Reason.GLFW_ERROR);
-    }
-
-    @Override
-    public @NonNull GpuDevice createDevice(
-            final long window, final @NonNull ShaderSource defaultShaderSource, final @NonNull GpuDebugOptions debugOptions, final @NonNull Runnable criticalShaderLoader
-    ) throws BackendCreationException {
-        // iOS: 必须在任何 Spvc 类加载之前设置 Configuration.SPVC_LIBRARY_NAME，
-        // 否则 LWJGL 会通过 dlsym(RTLD_DEFAULT) 拿到 MoltenVK 的精简版 SPIRV-Cross
-        // 符号（无 MSL 后端），导致 spvc_context_create_compiler(SPVC_BACKEND_MSL)
-        // 失败 -4 "Invalid backend"。详见 MetalNativeBridge.ensureSpvcLibraryConfigured。
+    @NonNull
+    public static MetalDevice createDevice(final long window, @Nullable final ShaderSource defaultShaderSource) {
         MetalNativeBridge.ensureSpvcLibraryConfigured();
 
         MemorySegment deviceHandle;
@@ -50,7 +31,7 @@ public class MetalBackend implements GpuBackend {
         String deviceName;
         deviceHandle = MetalNativeBridge.metallum_create_system_default_device();
         if (MetalNativeBridge.isNullHandle(deviceHandle)) {
-            throw new BackendCreationException("MTLCreateSystemDefaultDevice returned null", BackendCreationException.Reason.OTHER);
+            throw new IllegalStateException("MTLCreateSystemDefaultDevice returned null");
         }
 
         deviceName = MetalNativeBridge.metallum_copy_device_name(deviceHandle);
@@ -68,37 +49,31 @@ public class MetalBackend implements GpuBackend {
         } else {
             cocoaWindow = MemorySegment.ofAddress(GLFWNativeCocoa.glfwGetCocoaWindow(window));
             if (MetalNativeBridge.isNullHandle(cocoaWindow)) {
-                throw new BackendCreationException("glfwGetCocoaWindow returned null", BackendCreationException.Reason.GLFW_ERROR);
+                throw new IllegalStateException("glfwGetCocoaWindow returned null");
             }
 
-            cocoaView = MemorySegment.ofAddress(GLFWNativeCocoa.glfwGetCocoaView(window));
+            cocoaView = MetalNativeBridge.metallum_NSWindow_contentView(cocoaWindow);
             if (MetalNativeBridge.isNullHandle(cocoaView)) {
-                throw new BackendCreationException("glfwGetCocoaView returned null", BackendCreationException.Reason.GLFW_ERROR);
+                throw new IllegalStateException("glfwGetCocoaView returned null");
             }
 
             scale = MetalNativeBridge.metallum_NSWindow_backingScaleFactor(cocoaWindow);
         }
         if (scale <= 0.0) scale = 1.0;
 
-
         if (MetalNativeBridge.isIOS()) {
             // iOS: GameSurfaceView already overrides +layerClass to return
             // CAMetalLayer.class, so cocoaView.layer IS a CAMetalLayer. Use it
             // directly as the render target — this matches what Amethyst's own
-            // Vulkan path does in pojavCreateContext (Natives/egl_bridge.m:
-            // `return SurfaceViewController.surface.layer`). Creating a new
-            // CAMetalLayer and attaching it as a sublayer does NOT work
-            // reliably and results in a black screen with audio playing.
+            // Vulkan path does in pojavCreateContext (Natives/egl_bridge.m).
             metalLayer = MetalNativeBridge.metallum_ios_get_view_metal_layer(cocoaView, deviceHandle, scale);
             if (MetalNativeBridge.isNullHandle(metalLayer)) {
-                throw new BackendCreationException("metallum_ios_get_view_metal_layer returned null", BackendCreationException.Reason.OTHER);
+                throw new IllegalStateException("metallum_ios_get_view_metal_layer returned null");
             }
-            // No metallum_NSView_setMetalLayer call needed — the layer is
-            // already view.layer and is attached to the view by the launcher.
         } else {
             metalLayer = MetalNativeBridge.metallum_create_metal_layer(deviceHandle, scale);
             if (MetalNativeBridge.isNullHandle(metalLayer)) {
-                throw new BackendCreationException("Failed to create CAMetalLayer", BackendCreationException.Reason.OTHER);
+                throw new IllegalStateException("Failed to create CAMetalLayer");
             }
 
             MetalNativeBridge.metallum_NSView_setMetalLayer(cocoaView, metalLayer);
@@ -107,9 +82,9 @@ public class MetalBackend implements GpuBackend {
         Metallum.LOGGER.info("Metal device: {}", deviceName);
 
         try {
-            return new GpuDevice(new MetalDevice(defaultShaderSource, debugOptions, deviceHandle, metalLayer, deviceName, cocoaView), criticalShaderLoader);
+            return new MetalDevice(deviceHandle, metalLayer, deviceName, cocoaView, defaultShaderSource);
         } catch (Throwable throwable) {
-            throw new BackendCreationException("Metal device initialization failed: " + throwable.getMessage(), BackendCreationException.Reason.OTHER);
+            throw new IllegalStateException("Metal device initialization failed: " + throwable.getMessage(), throwable);
         }
     }
 
@@ -125,7 +100,7 @@ public class MetalBackend implements GpuBackend {
      *   <li>{@code pojav.view.pointer} – legacy PojavLauncher property</li>
      * </ul>
      */
-    private static MemorySegment readIOSSurfacePointer() throws BackendCreationException {
+    private static MemorySegment readIOSSurfacePointer() {
         String raw = System.getProperty("metallum.ios.view.pointer");
         if (raw == null || raw.isBlank()) {
             raw = System.getProperty("pojav.view.pointer");
@@ -135,19 +110,17 @@ public class MetalBackend implements GpuBackend {
             // property. Resolve it directly via the ObjC runtime instead:
             // metallum_ios_find_surface_view calls +[SurfaceViewController surface]
             // (with a key-window view-hierarchy fallback) to locate the host
-            // launcher's GameSurfaceView. This is the supported path on
-            // Amethyst/PojavLauncher_iOS.
+            // launcher's GameSurfaceView.
             MemorySegment nativeView = MetalNativeBridge.metallum_ios_find_surface_view();
             if (!MetalNativeBridge.isNullHandle(nativeView)) {
                 return nativeView;
             }
-            throw new BackendCreationException(
+            throw new IllegalStateException(
                     "Could not locate the iOS surface view. Neither the "
                             + "'metallum.ios.view.pointer'/'pojav.view.pointer' system property "
                             + "nor the +[SurfaceViewController surface] class method returned a UIView. "
                             + "If you are using a launcher other than Amethyst/PojavLauncher, set "
-                            + "'-Dmetallum.ios.view.pointer=<hex>' to the UIView address.",
-                    BackendCreationException.Reason.OTHER
+                            + "'-Dmetallum.ios.view.pointer=<hex>' to the UIView address."
             );
         }
         raw = raw.trim();
@@ -156,17 +129,11 @@ public class MetalBackend implements GpuBackend {
         try {
             address = Long.parseUnsignedLong(hex, 16);
         } catch (NumberFormatException e) {
-            throw new BackendCreationException(
-                    "Invalid UIView pointer '" + raw + "': expected a hex address",
-                    BackendCreationException.Reason.OTHER
-            );
+            throw new IllegalStateException("Invalid UIView pointer '" + raw + "': expected a hex address");
         }
         MemorySegment view = MemorySegment.ofAddress(address);
         if (MetalNativeBridge.isNullHandle(view)) {
-            throw new BackendCreationException(
-                    "Host-provided UIView pointer is null",
-                    BackendCreationException.Reason.OTHER
-            );
+            throw new IllegalStateException("Host-provided UIView pointer is null");
         }
         return view;
     }
