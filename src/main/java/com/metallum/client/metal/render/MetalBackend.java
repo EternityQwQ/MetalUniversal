@@ -20,6 +20,17 @@ public final class MetalBackend {
     private MetalBackend() {
     }
 
+    /**
+     * Metal 主机判定：macOS / iOS（完整判定链，含 JVM 谎报 os.name 的 iOS 沙箱信号）。
+     * 供 RenderSystemDeviceMixin 决定是否接管 device 创建。
+     */
+    public static boolean isMetalHost() {
+        String osName = System.getProperty("os.name", "");
+        return osName.toLowerCase(java.util.Locale.ROOT).contains("mac")
+                || osName.toLowerCase(java.util.Locale.ROOT).contains("ios")
+                || MetalNativeBridge.isIOS();
+    }
+
     @NonNull
     public static MetalDevice createDevice(final long window, @Nullable final ShaderSource defaultShaderSource) {
         MetalNativeBridge.ensureSpvcLibraryConfigured();
