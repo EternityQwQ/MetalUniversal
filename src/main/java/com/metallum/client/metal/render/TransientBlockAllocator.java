@@ -45,6 +45,13 @@ final class TransientBlockAllocator<T> {
     Allocation<T> allocate(final long size, final long alignment, final long minimumAllocation, final long elementSize) {
         long effectiveAlignment = Math.max(alignment, Math.max(elementSize, 1L));
         long alignedSize = roundUp(Math.max(size, minimumAllocation), effectiveAlignment);
+        if (alignedSize > blockSize) {
+            // 超大分配（26.2 MC 原版同语义）：分配独立专用块，offset=0，
+            // 加入 previousBlocks 由下一次 rotate() 统一释放
+            T big = allocator.create(alignedSize);
+            previousBlocks.add(big);
+            return new Allocation<>(big, 0L, size);
+        }
         if (currentBlock == null || roundUp(currentOffset, effectiveAlignment) + alignedSize > blockSize) {
             newBlock();
         }
