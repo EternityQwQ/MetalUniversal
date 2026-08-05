@@ -183,6 +183,11 @@ final class MetalCrossShaderCompiler {
                         Shaderc.shaderc_target_env_vulkan,
                         Shaderc.shaderc_env_version_vulkan_1_1
                 );
+                // 1.21.11 的 GLSL 无显式 layout(binding/location)（GL 后端编译前自动注入），
+                // 对齐 26.2 的 GlslCompiler：shaderc 自动绑定 UBO/自动映射 location。
+                // 后续 spvc 的 rebindResourceType 会按 BindingPlan 重设最终编号。
+                Shaderc.shaderc_compile_options_set_auto_bind_uniforms(options, true);
+                Shaderc.shaderc_compile_options_set_auto_map_locations(options, true);
                 result = Shaderc.shaderc_compile_into_spv(
                         compiler,
                         source,
