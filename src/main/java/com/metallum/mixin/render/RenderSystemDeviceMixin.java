@@ -61,7 +61,7 @@ public class RenderSystemDeviceMixin {
     @Redirect(
             method = "flipFrame",
             remap = false,
-            at = @At(value = "INVOKE", target = "Lorg/lwjgl/glfw/GLFW;glfwSwapBuffers:(J)V")
+            at = @At(value = "INVOKE", target = "Lorg/lwjgl/glfw/GLFW;glfwSwapBuffers")
     )
     private static void metallum$skipGlfwSwapBuffers(final long windowHandle) {
     }
