@@ -494,7 +494,9 @@ final class MetalCommandEncoder implements CommandEncoder {
         ByteBuffer region = MemoryUtil.memAlloc(bytesPerImage);
         try {
             for (int row = 0; row < height; row++) {
-                int rowStart = (sourceY + row) * rowBytes;
+                // region 是目标区域缓冲（height*width*4），行从 0 排布；
+                // 源坐标 (sourceX/sourceY) 仅用于 getPixel 取样，不得乘进行距
+                int rowStart = row * rowBytes;
                 for (int col = 0; col < width; col++) {
                     int abgr = image.getPixel(sourceX + col, sourceY + row);
                     int pos = rowStart + col * 4;
