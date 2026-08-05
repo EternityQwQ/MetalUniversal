@@ -178,10 +178,14 @@ final class MetalCrossShaderCompiler {
             long options = Shaderc.shaderc_compile_options_initialize();
             long result;
             try {
+                // 1.21.11 的 shader 是 GL 方言（gl_VertexID/gl_InstanceID 等），
+                // Vulkan 目标（GL_KHR_vulkan_glsl）会报 gl_VertexID undeclared。
+                // MC 1.21.11 的 GL 后端走驱动编译（glCompileShader），我们需用 GL 方言
+                // 编译出 SPIR-V（方言无关中间表示，spvc→MSL 不受影响）。
                 Shaderc.shaderc_compile_options_set_target_env(
                         options,
-                        Shaderc.shaderc_target_env_vulkan,
-                        Shaderc.shaderc_env_version_vulkan_1_1
+                        Shaderc.shaderc_target_env_opengl,
+                        Shaderc.shaderc_env_version_opengl_4_5
                 );
                 // 1.21.11 的 GLSL 无显式 layout(binding/location)（GL 后端编译前自动注入），
                 // 对齐 26.2 的 GlslCompiler：shaderc 自动绑定 UBO/自动映射 location。

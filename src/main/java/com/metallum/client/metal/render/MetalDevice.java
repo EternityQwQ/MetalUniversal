@@ -1,5 +1,6 @@
 package com.metallum.client.metal.render;
 
+import com.metallum.Metallum;
 import com.metallum.client.metal.render.bridge.MetalNativeBridge;
 import com.metallum.client.metal.render.mtl.MTLCommandQueue;
 import com.mojang.blaze3d.buffers.GpuBuffer;
@@ -337,12 +338,53 @@ final class MetalDevice implements GpuDevice {
         // 1.21.11 的 Identifier 无 of(ns, path) 两参工厂，用 parse 拼接完整 "ns:path"
         Identifier resourceId = Identifier.parse(id.getNamespace() + ":shaders/" + id.getPath() + suffix);
         try {
-            return org.apache.commons.io.IOUtils.toString(
+            String source = org.apache.commons.io.IOUtils.toString(
                     net.minecraft.client.Minecraft.getInstance().getResourceManager().openAsReader(resourceId)
             );
+            // MC 的 ShaderSource.get 会在内部展开 #moj_import；我们直读原始文件，
+            // 需自行展开（import 资源位于 shaders/include/<path>.glsl）
+            return expandMojImports(source, new HashSet<>());
         } catch (java.io.IOException | IllegalStateException e) {
             return null;
         }
+    }
+
+    private static final java.util.regex.Pattern MOJ_IMPORT_PATTERN =
+            java.util.regex.Pattern.compile("#moj_import\\s*<([a-z0-9_]+):([a-z0-9_./]+)>");
+
+    /**
+     * 展开 #moj_import 指令：读取 ns:shaders/include/<path>.glsl，删除其 #version 行
+     * （防多版本冲突）后内联，递归展开（include 内可能再 import），visited 防环。
+     */
+    private static String expandMojImports(final String source, final Set<String> visited) {
+        StringBuilder out = new StringBuilder(source.length() + 512);
+        for (String line : source.split("\n", -1)) {
+            java.util.regex.Matcher matcher = MOJ_IMPORT_PATTERN.matcher(line.trim());
+            if (!matcher.matches()) {
+                out.append(line).append('\n');
+                continue;
+            }
+            String namespace = matcher.group(1);
+            String path = matcher.group(2);
+            String key = namespace + ":" + path;
+            if (!visited.add(key)) {
+                continue;
+            }
+            try {
+                Identifier includeId = Identifier.parse(namespace + ":shaders/include/" + path + ".glsl");
+                String include = org.apache.commons.io.IOUtils.toString(
+                        net.minecraft.client.Minecraft.getInstance().getResourceManager().openAsReader(includeId)
+                );
+                // 删除 include 自身的 #version 指令（版本由主源声明）
+                include = include.replaceFirst("(?m)^\\s*#version\\s+\\d+.*$", "");
+                out.append(expandMojImports(include, visited));
+            } catch (java.io.IOException | IllegalStateException e) {
+                Metallum.LOGGER.warn("[metallum] Failed to expand moj_import <{}>: {}", key, e.toString());
+            } finally {
+                visited.remove(key);
+            }
+        }
+        return out.toString();
     }
 
     private static String prepareShaderSource(final String source, final ShaderDefines defines) {
