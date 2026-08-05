@@ -307,16 +307,42 @@ final class MetalDevice implements GpuDevice {
     /**
      * 1.21.11 的 ShaderSource 为接口（get(id, type) 返回 GLSL 源），编译结果以
      * 字符串缓存，实际 GLSL → SPIR-V → MSL 转换在 MetalCrossShaderCompiler 内完成。
+     *
+     * <p>ShaderSource 实例来自 Minecraft 构造内的 capturing lambda（initRenderer
+     * 参数），其 get() 对未预编译的 pipeline 可能返回 null——此时回退到资源直读
+     * （assets/minecraft/shaders/<path>.vsh/.fsh）。
      */
     String getOrCompileShaderSource(final Identifier id, final ShaderType type, final ShaderDefines defines, final ShaderSource shaderSource) {
         ShaderCompilationKey key = new ShaderCompilationKey(id, type, defines);
         return this.shaderSourceCache.computeIfAbsent(key, k -> {
-            String source = shaderSource.get(k.id(), k.type());
+            String source = shaderSource != null ? shaderSource.get(k.id(), k.type()) : null;
+            if (source == null) {
+                source = readShaderFromResources(k.id(), k.type());
+            }
             if (source == null) {
                 return null;
             }
             return prepareShaderSource(source, k.defines());
         });
+    }
+
+    /**
+     * 从资源包直读 pipeline shader 源：1.21.11 的 shader 文件位于
+     * assets/minecraft/shaders/core/*.vsh/.fsh（pipeline.getVertexShader() 的
+     * Identifier 如 minecraft:core/gui 拼接 shaders/<path>.vsh/.fsh 即命中）。
+     */
+    @Nullable
+    private static String readShaderFromResources(final Identifier id, final ShaderType type) {
+        String suffix = type == ShaderType.VERTEX ? ".vsh" : ".fsh";
+        // 1.21.11 的 Identifier 无 of(ns, path) 两参工厂，用 parse 拼接完整 "ns:path"
+        Identifier resourceId = Identifier.parse(id.getNamespace() + ":shaders/" + id.getPath() + suffix);
+        try {
+            return org.apache.commons.io.IOUtils.toString(
+                    net.minecraft.client.Minecraft.getInstance().getResourceManager().openAsReader(resourceId)
+            );
+        } catch (java.io.IOException | IllegalStateException e) {
+            return null;
+        }
     }
 
     private static String prepareShaderSource(final String source, final ShaderDefines defines) {
