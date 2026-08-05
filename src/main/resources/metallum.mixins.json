@@ -6,7 +6,8 @@
   "mixins": [
   ],
   "client": [
-    "render.RenderSystemDeviceMixin"
+    "render.RenderSystemDeviceMixin",
+    "render.GLFWSwapBuffersMixin"
   ],
   "injectors": {
     "defaultRequire": 1

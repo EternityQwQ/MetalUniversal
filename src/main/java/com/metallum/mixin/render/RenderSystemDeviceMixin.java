@@ -10,7 +10,6 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
@@ -22,6 +21,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  *
  * <p>Mixin 不支持 @Redirect 构造器（InvalidInjectionException: Illegal @Redirect
  * of constructor），故采用 HEAD + cancellable 方案。
+ *
+ * <p>flipFrame 的 glfwSwapBuffers 拦截已移至 GLFWSwapBuffersMixin（mixin 0.8.7 的
+ * @Redirect handler 参数必须覆盖目标方法全部参数，此处无法写出 fyk/fwf 类型）。
  */
 @Mixin(RenderSystem.class)
 public class RenderSystemDeviceMixin {
@@ -51,18 +53,5 @@ public class RenderSystemDeviceMixin {
         dynamicUniforms = new DynamicUniforms();
         samplerCache.initialize();
         ci.cancel();
-    }
-
-    /**
-     * 1.21.11 的 RenderSystem.flipFrame 在 present 之外仍直接调 glfwSwapBuffers（GL 交换）。
-     * Metal 后端下画面已由 CommandEncoder.presentTexture 提交，GL 交换会命中
-     * mobileglues 的 gl_swap_buffers（SIGSEGV），故跳过。
-     */
-    @Redirect(
-            method = "flipFrame",
-            remap = false,
-            at = @At(value = "INVOKE", target = "Lorg/lwjgl/glfw/GLFW;glfwSwapBuffers")
-    )
-    private static void metallum$skipGlfwSwapBuffers(final long windowHandle) {
     }
 }

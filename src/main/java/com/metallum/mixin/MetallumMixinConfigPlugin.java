@@ -15,6 +15,7 @@ import java.util.Set;
 
 public final class MetallumMixinConfigPlugin implements IMixinConfigPlugin {
     private static final String RENDER_SYSTEM_DEVICE_MIXIN = "com.metallum.mixin.render.RenderSystemDeviceMixin";
+    private static final String GLFW_SWAP_BUFFERS_MIXIN = "com.metallum.mixin.render.GLFWSwapBuffersMixin";
 
     private boolean isMetalHost;
 
@@ -42,7 +43,7 @@ public final class MetallumMixinConfigPlugin implements IMixinConfigPlugin {
         if (mixinClassName.contains(".mixin.sodium.")) {
             return FabricLoader.getInstance().isModLoaded("sodium");
         }
-        return RENDER_SYSTEM_DEVICE_MIXIN.equals(mixinClassName);
+        return RENDER_SYSTEM_DEVICE_MIXIN.equals(mixinClassName) || GLFW_SWAP_BUFFERS_MIXIN.equals(mixinClassName);
     }
 
     @Override
