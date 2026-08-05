@@ -10,6 +10,7 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
@@ -50,5 +51,18 @@ public class RenderSystemDeviceMixin {
         dynamicUniforms = new DynamicUniforms();
         samplerCache.initialize();
         ci.cancel();
+    }
+
+    /**
+     * 1.21.11 的 RenderSystem.flipFrame 在 present 之外仍直接调 glfwSwapBuffers（GL 交换）。
+     * Metal 后端下画面已由 CommandEncoder.presentTexture 提交，GL 交换会命中
+     * mobileglues 的 gl_swap_buffers（SIGSEGV），故跳过。
+     */
+    @Redirect(
+            method = "flipFrame",
+            remap = false,
+            at = @At(value = "INVOKE", target = "Lorg/lwjgl/glfw/GLFW;glfwSwapBuffers:(J)V")
+    )
+    private static void metallum$skipGlfwSwapBuffers(final long windowHandle) {
     }
 }
