@@ -87,6 +87,14 @@ tasks.register("buildMacNative", Exec) {
 		"-framework", "QuartzCore",
 		"-o", "src/main/resources/natives/macos/libmetallum.dylib",
 		"src/main/native/MetallumNative.swift"
+
+	doLast {
+		def dylib = file("src/main/resources/natives/macos/libmetallum.dylib")
+		if (!dylib.exists() || dylib.length() == 0) {
+			throw new GradleException("[buildMacNative] FAILED: dylib missing or empty: " + dylib)
+		}
+		logger.lifecycle("[buildMacNative] OK: " + dylib + " (" + dylib.length() + "B)")
+	}
 }
 
 // Builds the Metallum native bridge as a dylib targeting iOS arm64. The
@@ -145,6 +153,14 @@ tasks.register("buildIOSNative", Exec) {
 			"-framework", "UIKit",
 			"-o", "src/main/resources/natives/ios/libmetallum.dylib",
 			"src/main/native/MetallumNative.swift"
+	}
+
+	doLast {
+		def dylib = file("src/main/resources/natives/ios/libmetallum.dylib")
+		if (!dylib.exists() || dylib.length() == 0) {
+			throw new GradleException("[buildIOSNative] FAILED: dylib missing or empty: " + dylib)
+		}
+		logger.lifecycle("[buildIOSNative] OK: " + dylib + " (" + dylib.length() + "B)")
 	}
 }
 
