@@ -176,7 +176,10 @@ final class MetalRenderPass implements RenderPass {
     }
 
     @Override
-    public void drawIndexed(final int indexCount, final int instanceCount, final int firstIndex, final int vertexOffset) {
+    public void drawIndexed(final int baseVertex, final int indexOffset, final int indexCount, final int instanceCount) {
+        // 1.21.11 语义（GlCommandEncoder GL 实参反汇编实证）：
+        // (baseVertex, indexBufferOffset, indexCount, instanceCount)
+        // ——MCP 参数名（firstIndex, index, indexCount, primCount）有误导性
         if (this.indexBuffer == null) {
             Metallum.LOGGER.warn("[metallum] drawIndexed called with null index buffer, skipping draw");
             return;
@@ -185,7 +188,7 @@ final class MetalRenderPass implements RenderPass {
         MTLRenderCommandEncoder enc = renderEncoder();
 
         bindDrawState(enc);
-        drawIndexedNative(enc, nativeIndexBuffer, firstIndex, indexCount, vertexOffset, instanceCount, indexType, 0);
+        drawIndexedNative(enc, nativeIndexBuffer, indexOffset, indexCount, baseVertex, instanceCount, indexType, 0);
         countDraw();
     }
 
@@ -221,16 +224,17 @@ final class MetalRenderPass implements RenderPass {
     }
 
     @Override
-    public void draw(final int vertexCount, final int instanceCount) {
+    public void draw(final int firstVertex, final int vertexCount) {
+        // 1.21.11 语义（GlCommandEncoder GL 实参反汇编实证）：(firstVertex, vertexCount)
         MTLPrimitiveType primitiveType = primitiveTopology();
         MTLRenderCommandEncoder enc = renderEncoder();
 
         bindDrawState(enc);
 
         if (primitiveType == MTLPrimitiveType.TriangleFan) {
-            drawTriangleFan(enc, 0, vertexCount, Math.max(1, instanceCount), 0);
+            drawTriangleFan(enc, firstVertex, vertexCount, 1, 0);
         } else {
-            enc.drawPrimitives(primitiveType, 0, vertexCount, Math.max(1, instanceCount), 0);
+            enc.drawPrimitives(primitiveType, firstVertex, vertexCount, 1, 0);
         }
         countDraw();
     }
