@@ -54,6 +54,8 @@ final class MetalCommandEncoder implements CommandEncoder {
     private MemorySegment renderDepthAttachment = MemorySegment.NULL;
     private final Long2ObjectOpenHashMap<java.util.ArrayDeque<MemorySegment>> dynamicBackingPool = new Long2ObjectOpenHashMap<>();
     private static final int MAX_POOLED_DYNAMIC_BACKINGS_PER_SIZE = 8;
+    @Nullable
+    private MetalGpuTexture lastDepthTexture;
 
     MetalCommandEncoder(final MetalDevice device) {
         this.device = device;
@@ -252,6 +254,14 @@ final class MetalCommandEncoder implements CommandEncoder {
             metalDepth.markContentsDirty();
         }
 
+        if (Diagnostics.shouldRun("passclear", 3000L)) {
+            com.metallum.Metallum.LOGGER.error("[diag] passclear colorArg={} pendingColor={} colorTaken={} depth={} pendingDepth={} depthClear={}",
+                    clearColor.isPresent(), hadPendingColor, colorClear != null,
+                    depthTexture != null, hadPendingDepth, effectiveDepthClear.isPresent());
+        }
+
+        this.lastDepthTexture = depthTexture == null ? null : (MetalGpuTexture) depthTexture.texture();
+
         MetalRenderPass renderPass = new MetalRenderPass(
                 device,
                 this,
@@ -303,6 +313,9 @@ final class MetalCommandEncoder implements CommandEncoder {
                 "presentTexture sourceLabel={} format={} {}x{} closed={}",
                 src.getLabel(), src.getFormat(), src.getWidth(0), src.getHeight(0), src.isClosed());
         diagReadback(src, "main-target");
+        if (lastDepthTexture != null) {
+            diagReadbackDepth(lastDepthTexture, "main-depth");
+        }
         presentTextureToDrawable(device.metalLayer(), textureView);
         submit();
     }
@@ -579,7 +592,6 @@ final class MetalCommandEncoder implements CommandEncoder {
                     bytesPerImage
             );
             endEncoder();
-            diagReadback(metalDst, "upload");
         } finally {
             MemoryUtil.memFree(region);
         }
@@ -818,6 +830,43 @@ final class MetalCommandEncoder implements CommandEncoder {
         encoder.waitForFence(fence, MTLRenderStages.VertexAndFragment);
         currentEncoder = encoder;
         texture.recordMaterializedClear(colorClear, depthClear);
+    }
+
+    /**
+     * 深度纹理读回（Depth32Float）：主 pass 后读 4×4 采样，看 clear 值与是否被
+     * 方块写入。均匀=只有 clear（方块未写深度）；非均匀=方块渲染了。
+     */
+    private void diagReadbackDepth(final MetalGpuTexture texture, final String tag) {
+        if (!Diagnostics.shouldRun("rb:" + tag, 3000L)) {
+            return;
+        }
+        int w = Math.min(4, texture.getWidth(0));
+        int h = Math.min(4, texture.getHeight(0));
+        MetalGpuBuffer readback = new MetalGpuBuffer(
+                device, GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, (long) w * h * 4
+        );
+        copyTextureToBuffer(texture, readback, 0L, () -> {
+            try {
+                ByteBuffer data = readback.currentStorage();
+                int pixels = w * h;
+                double sum = 0.0;
+                float min = Float.MAX_VALUE;
+                float max = -Float.MAX_VALUE;
+                for (int i = 0; i < pixels; i++) {
+                    float v = data.getFloat(i * 4);
+                    sum += v;
+                    min = Math.min(min, v);
+                    max = Math.max(max, v);
+                }
+                float first = data.getFloat(0);
+                Metallum.LOGGER.error("[diag] readbackDepth {} {}x{} avg={} min={} max={} first={}",
+                        tag, w, h, (float) (sum / pixels), min, max, first);
+            } catch (Exception e) {
+                Metallum.LOGGER.error("[diag] readbackDepth {} failed: {}", tag, e.getMessage());
+            } finally {
+                readback.close();
+            }
+        }, 0, 0, 0, w, h);
     }
 
     private static boolean isFullTextureView(final GpuTextureView textureView) {

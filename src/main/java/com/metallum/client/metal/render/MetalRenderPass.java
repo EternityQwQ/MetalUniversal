@@ -54,6 +54,14 @@ final class MetalRenderPass implements RenderPass {
     private boolean scissorDirty = true;
     private boolean vertexBuffersDirty = true;
     private boolean pipelineDirty = true;
+    private long diagDrawCount;
+    private int diagMaxIndexCount;
+    private int diagU32Count;
+    private int diagMinBaseVertex = Integer.MAX_VALUE;
+    private int diagMaxBaseVertex = Integer.MIN_VALUE;
+    private int diagMinIndexOffset = Integer.MAX_VALUE;
+    private int diagMaxIndexOffset = Integer.MIN_VALUE;
+    private long diagWindowStart;
 
     MetalRenderPass(
             final MetalDevice device,
@@ -326,7 +334,7 @@ final class MetalRenderPass implements RenderPass {
 
             MetalGpuBuffer nativeVertexBuffer = (MetalGpuBuffer) vertexBuffer.buffer();
             int metalSlot = firstSlot + slot;
-            Diagnostics.once("vbuf:" + slot,
+            Diagnostics.once("vbuf:" + metalSlot,
                     "pushVertexBuffers slot={} metalSlot={} handle=0x{} offset={} closed={} size={} first16={}",
                     slot, metalSlot, Long.toHexString(nativeVertexBuffer.nativeHandle().address()),
                     vertexBuffer.offset(), nativeVertexBuffer.isClosed(), vertexBuffer.length(),
@@ -372,11 +380,36 @@ final class MetalRenderPass implements RenderPass {
             final int baseInstance
     ) {
         MTLPrimitiveType primitiveType = primitiveTopology();
-        if (Diagnostics.shouldRun("drawidx", 5000L)) {
-            com.metallum.Metallum.LOGGER.error("[diag] drawIndexedNative prim={} idxBuf=0x{} idxType={} idxCount={} firstIdx={} baseVtx={} inst={}",
-                    primitiveType, Long.toHexString(nativeIndexBuffer.nativeHandle().address()),
-                    indexType, indexCount, firstIndex, baseVertex, instanceCount);
+        // 窗口统计（5s）：聚合 chunk 大 draw 参数，替代"只显示窗口第一条"（GUI 小 draw 曾独占）
+        long now = System.nanoTime();
+        if (diagWindowStart == 0L) {
+            diagWindowStart = now;
         }
+        long elapsedMs = (now - diagWindowStart) / 1_000_000L;
+        if (elapsedMs >= 5000L) {
+            if (diagDrawCount > 0) {
+                com.metallum.Metallum.LOGGER.error("[diag] drawIdxStat prim={} draws={} maxIdx={} u32={} baseVtx=[{},{}] idxOff=[{},{}]",
+                        primitiveType, diagDrawCount, diagMaxIndexCount, diagU32Count,
+                        diagMinBaseVertex, diagMaxBaseVertex, diagMinIndexOffset, diagMaxIndexOffset);
+            }
+            diagWindowStart = now;
+            diagDrawCount = 0;
+            diagMaxIndexCount = 0;
+            diagU32Count = 0;
+            diagMinBaseVertex = Integer.MAX_VALUE;
+            diagMaxBaseVertex = Integer.MIN_VALUE;
+            diagMinIndexOffset = Integer.MAX_VALUE;
+            diagMaxIndexOffset = Integer.MIN_VALUE;
+        }
+        diagDrawCount++;
+        diagMaxIndexCount = Math.max(diagMaxIndexCount, indexCount);
+        if (indexType == MTLIndexType.UInt32) {
+            diagU32Count++;
+        }
+        diagMinBaseVertex = Math.min(diagMinBaseVertex, baseVertex);
+        diagMaxBaseVertex = Math.max(diagMaxBaseVertex, baseVertex);
+        diagMinIndexOffset = Math.min(diagMinIndexOffset, firstIndex);
+        diagMaxIndexOffset = Math.max(diagMaxIndexOffset, firstIndex);
 
         long indexOffsetBytes = (long) firstIndex * indexType.bytes;
         if (primitiveType == MTLPrimitiveType.TriangleFan) {
@@ -412,7 +445,9 @@ final class MetalRenderPass implements RenderPass {
             if (MetalNativeBridge.isNullHandle(pipelineHandle)) {
                 throw new IllegalStateException("Native pipeline is unavailable");
             }
-            Diagnostics.once("pipe:" + compiledPipeline.getClass().getSimpleName() + "|" + useDepth,
+            Diagnostics.once("pipe:" + compiledPipeline.getClass().getSimpleName() + "|" + useDepth
+                            + "|" + compiledPipeline.depthCompareOp() + "|" + compiledPipeline.depthWrite()
+                            + "|" + compiledPipeline.cullMode(),
                     "bindPipeline {} useDepth={} colorFmt={} depthFmt={} cull={} winding={} depthOp={} depthWrite={}",
                     compiledPipeline.getClass().getSimpleName(), useDepth, colorAttachmentFormat(), depthAttachmentFormat(),
                     compiledPipeline.cullMode(), MTLWinding.Clockwise, compiledPipeline.depthCompareOp(), compiledPipeline.depthWrite());
