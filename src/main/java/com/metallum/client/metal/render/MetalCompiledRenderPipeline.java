@@ -19,6 +19,7 @@ import java.lang.foreign.MemorySegment;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 @Environment(EnvType.CLIENT)
 final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoCloseable {
@@ -54,6 +55,7 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
     private final RenderPipeline pipeline;
     private final MemorySegment vertexFunction;
     private final MemorySegment fragmentFunction;
+    private final Set<String> integerInputs;
 
     MetalCompiledRenderPipeline(
             final MetalDevice device,
@@ -62,7 +64,8 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
             final String fragmentMsl,
             final String vertexEntryPoint,
             final String fragmentEntryPoint,
-            final List<ResourceBinding> resources
+            final List<ResourceBinding> resources,
+            final Set<String> integerInputs
     ) {
         this.resources = resources;
         this.resourcesByName = resources.stream().collect(java.util.stream.Collectors.toUnmodifiableMap(ResourceBinding::name, binding -> binding));
@@ -86,6 +89,7 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
         this.vertexBufferCount = 1;
         this.device = device;
         this.pipeline = info;
+        this.integerInputs = integerInputs;
 
         // 1.21.11 无 DepthStencilState 对象：深度状态由 DepthTestFunction + writeDepth 布尔推导
         DepthTestFunction depthTest = info.getDepthTestFunction();
@@ -232,7 +236,7 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
         return this.vertexBufferCount;
     }
 
-    private static MTLVertexDescriptor buildVertexDescriptor(
+    private MTLVertexDescriptor buildVertexDescriptor(
             final RenderPipeline pipeline,
             final int firstMetalVertexBufferSlot
     ) {
@@ -249,7 +253,12 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
 
         long attrIndex = 0;
         for (VertexFormatElement element : binding.getElements()) {
-            MTLVertexFormat format = MTLVertexFormat.from(element.type(), element.count());
+            // shader 声明为 int/uint 的输入（如 ivec2 UV2）用非 normalized 格式，
+            // 否则 Metal 报 "Cannot convert attribute from *Normalized to int2 or uint2"
+            String attributeName = binding.getElementName(element);
+            MTLVertexFormat format = integerInputs.contains(attributeName)
+                    ? MTLVertexFormat.fromInteger(element.type(), element.count())
+                    : MTLVertexFormat.from(element.type(), element.count());
             if (format == MTLVertexFormat.Invalid) {
                 throw new IllegalStateException("Unsupported vertex attribute format: " + element.type() + "x" + element.count());
             }

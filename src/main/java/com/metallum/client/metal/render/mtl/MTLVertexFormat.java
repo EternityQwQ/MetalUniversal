@@ -67,6 +67,20 @@ public enum MTLVertexFormat {
     }
 
     public static MTLVertexFormat from(final com.mojang.blaze3d.vertex.VertexFormatElement.Type type, final int count) {
+        return fromImpl(type, count, true);
+    }
+
+    /**
+     * 整型语义 attribute（shader 声明 ivec/uvec，如 1.21.11 的 rendertype_text.vsh 中
+     * `in ivec2 UV2`）：descriptor 必须用非 normalized 格式，否则 Metal 报
+     * "Cannot convert attribute from MTLAttributeFormat*Normalized to int2 or uint2"
+     * （normalized 格式只允许转 float；GL 后端无此限制，Metal 严格匹配）。
+     */
+    public static MTLVertexFormat fromInteger(final com.mojang.blaze3d.vertex.VertexFormatElement.Type type, final int count) {
+        return fromImpl(type, count, false);
+    }
+
+    private static MTLVertexFormat fromImpl(final com.mojang.blaze3d.vertex.VertexFormatElement.Type type, final int count, final boolean normalized) {
         // 1.21.11 无 GpuFormat：顶点格式由 VertexFormatElement.Type + 分量数推导
         return switch (type) {
             case FLOAT -> switch (count) {
@@ -77,31 +91,31 @@ public enum MTLVertexFormat {
                 default -> Invalid;
             };
             case UBYTE -> switch (count) {
-                case 1 -> UCharNormalized;
-                case 2 -> UChar2Normalized;
-                case 3 -> UChar3Normalized;
-                case 4 -> UChar4Normalized;
+                case 1 -> normalized ? UCharNormalized : UChar;
+                case 2 -> normalized ? UChar2Normalized : UChar2;
+                case 3 -> normalized ? UChar3Normalized : UChar3;
+                case 4 -> normalized ? UChar4Normalized : UChar4;
                 default -> Invalid;
             };
             case BYTE -> switch (count) {
-                case 1 -> CharNormalized;
-                case 2 -> Char2Normalized;
-                case 3 -> Char3Normalized;
-                case 4 -> Char4Normalized;
+                case 1 -> normalized ? CharNormalized : Char;
+                case 2 -> normalized ? Char2Normalized : Char2;
+                case 3 -> normalized ? Char3Normalized : Char3;
+                case 4 -> normalized ? Char4Normalized : Char4;
                 default -> Invalid;
             };
             case USHORT -> switch (count) {
-                case 1 -> UShortNormalized;
-                case 2 -> UShort2Normalized;
-                case 3 -> UShort3Normalized;
-                case 4 -> UShort4Normalized;
+                case 1 -> normalized ? UShortNormalized : UShort;
+                case 2 -> normalized ? UShort2Normalized : UShort2;
+                case 3 -> normalized ? UShort3Normalized : UShort3;
+                case 4 -> normalized ? UShort4Normalized : UShort4;
                 default -> Invalid;
             };
             case SHORT -> switch (count) {
-                case 1 -> ShortNormalized;
-                case 2 -> Short2Normalized;
-                case 3 -> Short3Normalized;
-                case 4 -> Short4Normalized;
+                case 1 -> normalized ? ShortNormalized : Short;
+                case 2 -> normalized ? Short2Normalized : Short2;
+                case 3 -> normalized ? Short3Normalized : Short3;
+                case 4 -> normalized ? Short4Normalized : Short4;
                 default -> Invalid;
             };
             case UINT -> switch (count) {

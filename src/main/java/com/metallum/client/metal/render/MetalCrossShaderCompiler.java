@@ -86,8 +86,8 @@ final class MetalCrossShaderCompiler {
 
             // SPIRV-Cross 保留 GLSL 参数名：terrain.fsh 的 sampleNearest(sampler2D sampler, ...)
             // 生成的 MSL 中 texture2d<float> sampler 会遮蔽内置类型名 sampler → 参数改名
-            vertexMsl = new MslShader(sanitizeMsl(vertexMsl.source()), vertexMsl.activeResources(), vertexMsl.outputLocations());
-            fragmentMsl = new MslShader(sanitizeMsl(fragmentMsl.source()), fragmentMsl.activeResources(), fragmentMsl.outputLocations());
+            vertexMsl = new MslShader(sanitizeMsl(vertexMsl.source()), vertexMsl.activeResources(), vertexMsl.outputLocations(), vertexMsl.integerInputs());
+            fragmentMsl = new MslShader(sanitizeMsl(fragmentMsl.source()), fragmentMsl.activeResources(), fragmentMsl.outputLocations(), fragmentMsl.integerInputs());
 
             String vertexEntryPoint = extractEntryPoint(vertexMsl.source(), VERTEX_ENTRY_PATTERN, "main0");
             String fragmentEntryPoint = extractEntryPoint(fragmentMsl.source(), FRAGMENT_ENTRY_PATTERN, "main0");
@@ -99,7 +99,8 @@ final class MetalCrossShaderCompiler {
                     fragmentMsl.source(),
                     vertexEntryPoint,
                     fragmentEntryPoint,
-                    resources
+                    resources,
+                    vertexMsl.integerInputs()
             );
         } catch (ShaderCompileException e) {
             throw new IllegalStateException("Failed to compile Metal cross shader for pipeline " + pipeline.getLocation(), e);
@@ -411,10 +412,12 @@ final class MetalCrossShaderCompiler {
                 rebindResourceType(stack, compiler, resources, Spvc.SPVC_RESOURCE_TYPE_SEPARATE_IMAGE, bindingPlan.textureBindings());
                 // 4. 整数输入转换（需在 location 重设之后读取装饰）
                 registerIntegerInputConversions(stack, compiler, attributeTypes);
+                // 5. 收集 shader 中声明为 int/uint 的顶点输入名（descriptor 需用非 normalized 格式）
+                Set<String> integerInputs = collectIntegerInputs(stack, compiler, resources);
 
                 PointerBuffer pSource = stack.mallocPointer(1);
                 checkSpvc(Spvc.spvc_compiler_compile(compiler, pSource), "spvc_compiler_compile");
-                return new MslShader(MemoryUtil.memUTF8(pSource.get(0)), activeResources, outputLocations);
+                return new MslShader(MemoryUtil.memUTF8(pSource.get(0)), activeResources, outputLocations, integerInputs);
             } finally {
                 Spvc.spvc_context_destroy(context);
             }
@@ -516,6 +519,36 @@ final class MetalCrossShaderCompiler {
     }
 
     /**
+     * 收集 SPIR-V 中声明为 int/uint 的 stage 输入名（GLSL 的 ivec/uvec，如
+     * rendertype_text.vsh 的 `in ivec2 UV2`）。Metal 的 vertex descriptor 对这些
+     * attribute 必须使用非 normalized 格式（normalized 只允许转 float）。
+     */
+    private static Set<String> collectIntegerInputs(
+            final MemoryStack stack,
+            final long compiler,
+            final long resources
+    ) throws ShaderCompileException {
+        PointerBuffer pList = stack.mallocPointer(1);
+        PointerBuffer pCount = stack.mallocPointer(1);
+        checkSpvc(Spvc.spvc_resources_get_resource_list_for_type(resources, Spvc.SPVC_RESOURCE_TYPE_STAGE_INPUT, pList, pCount), "spvc_resources_get_resource_list_for_type(STAGE_INPUT)");
+        int count = (int) pCount.get(0);
+        Set<String> integerInputs = new LinkedHashSet<>();
+        if (count == 0) {
+            return integerInputs;
+        }
+        SpvcReflectedResource.Buffer list = SpvcReflectedResource.create(pList.get(0), count);
+        for (int i = 0; i < count; i++) {
+            SpvcReflectedResource input = list.get(i);
+            long typeHandle = Spvc.spvc_compiler_get_type_handle(compiler, input.type_id());
+            int baseType = Spvc.spvc_type_get_basetype(typeHandle);
+            if (baseType >= Spvc.SPVC_BASETYPE_INT8 && baseType <= Spvc.SPVC_BASETYPE_UINT64) {
+                integerInputs.add(input.nameString());
+            }
+        }
+        return integerInputs;
+    }
+
+    /**
      * GLSL 内置变量（gl_* 前缀，spvc 反射名保留 GLSL 名）：不参与 user(locnN)
      * 接口匹配，重设 location 会破坏 builtin 语义，必须跳过。
      */
@@ -523,7 +556,7 @@ final class MetalCrossShaderCompiler {
         return name.startsWith("gl_");
     }
 
-    record MslShader(String source, Set<String> activeResources, Map<String, Integer> outputLocations) {
+    record MslShader(String source, Set<String> activeResources, Map<String, Integer> outputLocations, Set<String> integerInputs) {
     }
 
     record ResourceSlot(String name, MetalCompiledRenderPipeline.ResourceKind kind, int binding) {

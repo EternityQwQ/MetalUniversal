@@ -43,7 +43,9 @@ public final class MetallumSelfUpdater {
 
     public static void startIfNeeded() {
         String buildTag = readBuildTag();
-        if (buildTag == null || buildTag.isBlank() || "dev".equals(buildTag)) {
+        // buildTag 为 null（历史 jar 无 Implementation-Build manifest，如
+        // fix-autoupdate 之前的版本）时也检查更新，否则旧 jar 永远无法被自更新拉新。
+        if (buildTag != null && ("dev".equals(buildTag) || buildTag.isBlank())) {
             return;
         }
         String token = System.getenv("GH_TOKEN");
