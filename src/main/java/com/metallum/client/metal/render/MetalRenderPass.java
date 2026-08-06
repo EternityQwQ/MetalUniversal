@@ -62,6 +62,11 @@ final class MetalRenderPass implements RenderPass {
     private int diagMinIndexOffset = Integer.MAX_VALUE;
     private int diagMaxIndexOffset = Integer.MIN_VALUE;
     private long diagWindowStart;
+    private long diagDrawCallCount;
+    private int diagMinFirstVertex = Integer.MAX_VALUE;
+    private int diagMaxFirstVertex = Integer.MIN_VALUE;
+    private int diagMinVertexCount = Integer.MAX_VALUE;
+    private int diagMaxVertexCount = Integer.MIN_VALUE;
 
     MetalRenderPass(
             final MetalDevice device,
@@ -240,6 +245,11 @@ final class MetalRenderPass implements RenderPass {
             // 1.21.11 的 Draw 无 baseVertex 字段：顶点偏移恒为 0
             drawIndexedNative(enc, nativeIndexBuffer, draw.firstIndex(), draw.indexCount(), 0, 1, drawIndexType, 0);
         }
+        // v5 遗漏的诊断：chunk 若走 multidraw 路径，此处必现
+        if (Diagnostics.shouldRun("multidraw", 5000L)) {
+            com.metallum.Metallum.LOGGER.error("[diag] multiDraw draws={} first={} idxCount={} slot={}",
+                    drawTotal, firstDrawFirstIndex, firstDrawIndexCount, firstDrawSlot);
+        }
     }
 
     @Override
@@ -249,6 +259,24 @@ final class MetalRenderPass implements RenderPass {
         MTLRenderCommandEncoder enc = renderEncoder();
 
         bindDrawState(enc);
+
+        // 统计：1.21.11 chunk 渲染走 draw()（非索引路径），参数范围用于定位画不出根因
+        diagDrawCallCount++;
+        diagMinFirstVertex = Math.min(diagMinFirstVertex, firstVertex);
+        diagMaxFirstVertex = Math.max(diagMaxFirstVertex, firstVertex);
+        diagMinVertexCount = Math.min(diagMinVertexCount, vertexCount);
+        diagMaxVertexCount = Math.max(diagMaxVertexCount, vertexCount);
+        if (Diagnostics.shouldRun("drawstat", 5000L)) {
+            com.metallum.Metallum.LOGGER.error("[diag] drawStat draws={} firstVtx=[{}..{}] vtxCount=[{}..{}] mode={}",
+                    diagDrawCallCount, diagMinFirstVertex, diagMaxFirstVertex,
+                    diagMinVertexCount, diagMaxVertexCount,
+                    compiledPipeline == null ? "?" : compiledPipeline.getVertexFormatMode());
+            diagDrawCallCount = 0;
+            diagMinFirstVertex = Integer.MAX_VALUE;
+            diagMaxFirstVertex = Integer.MIN_VALUE;
+            diagMinVertexCount = Integer.MAX_VALUE;
+            diagMaxVertexCount = Integer.MIN_VALUE;
+        }
 
         if (primitiveType == MTLPrimitiveType.TriangleFan) {
             drawTriangleFan(enc, firstVertex, vertexCount, 1, 0);

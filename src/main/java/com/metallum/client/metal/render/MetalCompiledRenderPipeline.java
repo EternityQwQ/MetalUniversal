@@ -266,6 +266,13 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
         return this.topology;
     }
 
+    /**
+     * 原始顶点拓扑模式（1.21.11 的 VertexFormat.Mode）——诊断日志用。
+     */
+    com.mojang.blaze3d.vertex.VertexFormat.Mode getVertexFormatMode() {
+        return this.pipeline.getVertexFormatMode();
+    }
+
     int vertexBufferCount() {
         return this.vertexBufferCount;
     }
