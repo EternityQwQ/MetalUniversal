@@ -62,6 +62,7 @@ final class MetalRenderPass implements RenderPass {
     private int diagMinIndexOffset = Integer.MAX_VALUE;
     private int diagMaxIndexOffset = Integer.MIN_VALUE;
     private long diagWindowStart;
+    private final java.util.Map<String, String> diagLastUbufHex = new java.util.HashMap<>();
     private long diagDrawCallCount;
     private int diagMinFirstVertex = Integer.MAX_VALUE;
     private int diagMaxFirstVertex = Integer.MIN_VALUE;
@@ -511,7 +512,8 @@ final class MetalRenderPass implements RenderPass {
             }
 
             enc.setFrontFacingWinding(MTLWinding.Clockwise);
-            enc.setCullMode(compiledPipeline.cullMode());
+            // v9 二分：临时强制不剔除，验证 cull/winding 是否为 chunk 不可见根因
+            enc.setCullMode(MTLCullMode.None);
             enc.setTriangleFillMode(compiledPipeline.fillMode());
 
             dirtyDescriptorMask |= compiledPipeline.allResourceMask();
@@ -637,12 +639,16 @@ final class MetalRenderPass implements RenderPass {
         }
 
         MetalGpuBuffer uniformBuffer = (MetalGpuBuffer) uniformSlice.buffer();
-        Diagnostics.once("ubind:" + binding.name(),
-                "pushDescriptor UNIFORM_BUFFER name={} idx={} stage=0x{} handle=0x{} offset={} len={} first64={}",
-                binding.name(), binding.bindingIndex(), binding.stageMask(),
-                Long.toHexString(uniformBuffer.nativeHandle().address()),
-                uniformSlice.offset(), uniformSlice.length(),
-                storageHex(uniformBuffer, 64));
+        // v9：UBO 内容变化时打（5s 节流兜底）——拿世界 pass 的 Projection/ChunkSection 真实矩阵
+        String hex = storageHex(uniformBuffer, 64);
+        String lastHex = diagLastUbufHex.get(binding.name());
+        if (!hex.equals(lastHex) && Diagnostics.shouldRun("ubind:" + binding.name(), 5000L)) {
+            diagLastUbufHex.put(binding.name(), hex);
+            com.metallum.Metallum.LOGGER.error("[diag] pushDescriptor UNIFORM_BUFFER name={} idx={} stage=0x{} handle=0x{} offset={} len={} first64={}",
+                    binding.name(), binding.bindingIndex(), binding.stageMask(),
+                    Long.toHexString(uniformBuffer.nativeHandle().address()),
+                    uniformSlice.offset(), uniformSlice.length(), hex);
+        }
         enc.setBuffer(uniformBuffer.nativeHandle(), uniformSlice.offset(), binding.bindingIndex(), binding.stageMask());
     }
 
