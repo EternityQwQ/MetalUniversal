@@ -201,9 +201,40 @@ final class MetalRenderPass implements RenderPass {
     ) {
         VertexFormat.IndexType fallbackIndexType = defaultIndexType == null ? VertexFormat.IndexType.SHORT : defaultIndexType;
 
-        int i = 0;
+        // 批量路径：所有 draw 共享 indexBuffer/indexType/vertexBuffer/slot 且无 per-draw uniform
+        // 时，一次 multiDrawIndexed 调用替代 N 次 drawIndexedPrimitives——省 N-1 次 Java↔Swift
+        // FFM 边界调用（chunk 渲染每区块 2-8 draws，每帧几十区块，收益明显）。
+        // TriangleFan 走瞬态缓冲展开，无法批量。
+        if (primitiveTopology() != MTLPrimitiveType.TriangleFan && draws.size() > 1) {
+            boolean batchable = true;
+            RenderPass.Draw<T> firstDraw = null;
+            for (RenderPass.Draw<T> draw : draws) {
+                if (draw.uniformUploaderConsumer() != null) {
+                    batchable = false;
+                    break;
+                }
+                if (firstDraw == null) {
+                    firstDraw = draw;
+                    continue;
+                }
+                if ((draw.indexType() == null ? fallbackIndexType : draw.indexType())
+                                != (firstDraw.indexType() == null ? fallbackIndexType : firstDraw.indexType())
+                        || draw.vertexBuffer() != firstDraw.vertexBuffer()
+                        || draw.slot() != firstDraw.slot()
+                        || (draw.indexBuffer() == null ? defaultIndexBuffer : draw.indexBuffer())
+                                != (firstDraw.indexBuffer() == null ? defaultIndexBuffer : firstDraw.indexBuffer())) {
+                    batchable = false;
+                    break;
+                }
+            }
+            if (batchable && firstDraw != null) {
+                drawMultipleIndexedBatch(draws, firstDraw, defaultIndexBuffer, fallbackIndexType);
+                return;
+            }
+        }
+
+        // fallback：逐 draw（indexBuffer/indexType/vertexBuffer 不同或带 per-draw uniform）
         for (RenderPass.Draw<T> draw : draws) {
-            i++;
             MTLIndexType drawIndexType = MTLIndexType.from(draw.indexType() == null ? fallbackIndexType : draw.indexType());
             GpuBuffer currentIndexBuffer = draw.indexBuffer() == null ? defaultIndexBuffer : draw.indexBuffer();
 
@@ -221,6 +252,55 @@ final class MetalRenderPass implements RenderPass {
             MetalGpuBuffer nativeIndexBuffer = (MetalGpuBuffer) indexBuffer;
             // 1.21.11 的 Draw 无 baseVertex 字段：顶点偏移恒为 0
             drawIndexedNative(enc, nativeIndexBuffer, draw.firstIndex(), draw.indexCount(), 0, 1, drawIndexType, 0);
+        }
+    }
+
+    /**
+     * 批量绘制：共享缓冲的 draw 集合一次性编码（FFM 边界调用 N→1）。
+     * firstIndexOffsets 为字节偏移（元素单位 × 索引宽度），vertexOffsets 恒 0
+     * （1.21.11 的 Draw 无 baseVertex）。
+     */
+    private <T> void drawMultipleIndexedBatch(
+            final Collection<RenderPass.Draw<T>> draws,
+            final RenderPass.Draw<T> firstDraw,
+            final GpuBuffer defaultIndexBuffer,
+            final VertexFormat.IndexType fallbackIndexType
+    ) {
+        GpuBuffer indexBuffer = firstDraw.indexBuffer() == null ? defaultIndexBuffer : firstDraw.indexBuffer();
+        MTLIndexType indexType = MTLIndexType.from(firstDraw.indexType() == null ? fallbackIndexType : firstDraw.indexType());
+        setIndexBuffer(indexBuffer, indexType);
+        setVertexBuffer(firstDraw.slot(), firstDraw.vertexBuffer());
+
+        MTLRenderCommandEncoder enc = renderEncoder();
+        if (scissorDirty || vertexBuffersDirty || dirtyDescriptorMask != 0L || pipelineDirty) {
+            bindDrawState(enc);
+        }
+
+        int n = draws.size();
+        int bytes = indexType.bytes;
+        try (java.lang.foreign.Arena arena = java.lang.foreign.Arena.ofConfined()) {
+            java.lang.foreign.MemorySegment offsets = arena.allocate(java.lang.foreign.ValueLayout.JAVA_LONG, n);
+            java.lang.foreign.MemorySegment counts = arena.allocate(java.lang.foreign.ValueLayout.JAVA_INT, n);
+            java.lang.foreign.MemorySegment vertexOffsets = arena.allocate(java.lang.foreign.ValueLayout.JAVA_INT, n);
+            int idx = 0;
+            for (RenderPass.Draw<T> draw : draws) {
+                offsets.setAtIndex(java.lang.foreign.ValueLayout.JAVA_LONG, idx, (long) draw.firstIndex() * bytes);
+                counts.setAtIndex(java.lang.foreign.ValueLayout.JAVA_INT, idx, draw.indexCount());
+                vertexOffsets.setAtIndex(java.lang.foreign.ValueLayout.JAVA_INT, idx, 0);
+                idx++;
+            }
+            MetalNativeBridge.MTLRenderCommandEncoder_multiDrawIndexed(
+                    enc.handle(),
+                    primitiveTopology().value,
+                    indexType.value,
+                    ((MetalGpuBuffer) indexBuffer).nativeHandle(),
+                    offsets,
+                    counts,
+                    vertexOffsets,
+                    n,
+                    1L,
+                    0L
+            );
         }
     }
 
