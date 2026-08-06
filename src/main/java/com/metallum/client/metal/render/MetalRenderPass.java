@@ -385,6 +385,8 @@ final class MetalRenderPass implements RenderPass {
             if (MetalNativeBridge.isNullHandle(pipelineHandle)) {
                 throw new IllegalStateException("Native pipeline is unavailable");
             }
+            com.metallum.Metallum.LOGGER.error("[diag] bindPipeline {} useDepth={} colorFmt={} depthFmt={}",
+                    compiledPipeline.getClass().getSimpleName(), useDepth, colorAttachmentFormat(), depthAttachmentFormat());
             enc.setRenderPipelineState(pipelineHandle);
             pipelineDirty = false;
 

@@ -289,7 +289,11 @@ private func buildPresentSampler(device: MTLDevice, filter: MTLSamplerMinMagFilt
     descriptor.mipFilter = .notMipmapped
     descriptor.sAddressMode = .clampToEdge
     descriptor.tAddressMode = .clampToEdge
-    return device.makeSamplerState(descriptor: descriptor)
+    if let state = device.makeSamplerState(descriptor: descriptor) {
+        return state
+    }
+    NSLog("[metallum] Failed to create present sampler (filter=%@)", filter == .linear ? "linear" : "nearest")
+    return nil
 }
 
 private func ensureClearColorDepthPipeline(_ device: MTLDevice, _ colorFormat: MTLPixelFormat, _ depthFormat: MTLPixelFormat, _ writeColor: Bool = true) -> MTLRenderPipelineState? {

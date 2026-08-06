@@ -211,6 +211,10 @@ final class MetalCommandEncoder implements CommandEncoder {
             final @NonNull OptionalDouble clearDepth
     ) {
         MetalGpuTexture colorTex = (MetalGpuTexture) colorTexture.texture();
+        com.metallum.Metallum.LOGGER.error("[diag] createRenderPass colorLabel={} format={} {}x{} depth={} clear={}",
+                colorTex.getLabel(), colorTex.getFormat(),
+                colorTexture.getWidth(0), colorTexture.getHeight(0),
+                depthTexture != null, clearColor.isPresent());
         Vector4fc pendingColor = pendingColorClears.get(colorTex);
         if (pendingColor != null && isFullTextureView(colorTexture) && clearColor.isEmpty()) {
             pendingColorClears.remove(colorTex);
@@ -284,6 +288,9 @@ final class MetalCommandEncoder implements CommandEncoder {
     @Override
     public void presentTexture(final @NonNull GpuTextureView textureView) {
         // 1.21.11 无 GpuSurface：present 由 CommandEncoder 直接承担，每帧末提交
+        MetalGpuTexture src = (MetalGpuTexture) textureView.texture();
+        com.metallum.Metallum.LOGGER.error("[diag] presentTexture sourceLabel={} format={} {}x{} closed={}",
+                src.getLabel(), src.getFormat(), src.getWidth(0), src.getHeight(0), src.isClosed());
         presentTextureToDrawable(device.metalLayer(), textureView);
         submit();
     }
@@ -488,7 +495,7 @@ final class MetalCommandEncoder implements CommandEncoder {
         MetalGpuTexture metalDst = (MetalGpuTexture) destination;
         flushPendingClearForWrite(metalDst);
 
-        // 1.21.11 的 NativeImage 无 getPixels()：逐像素 getPixelABGR（返回 0xAABBGGRR）
+        // 1.21.11 的 NativeImage 无 getPixels()：逐像素 getPixel（javap 实证返回 ARGB 0xAARRGGBB）
         int rowBytes = width * 4;
         int bytesPerImage = rowBytes * height;
         ByteBuffer region = MemoryUtil.memAlloc(bytesPerImage);
@@ -498,12 +505,13 @@ final class MetalCommandEncoder implements CommandEncoder {
                 // 源坐标 (sourceX/sourceY) 仅用于 getPixel 取样，不得乘进行距
                 int rowStart = row * rowBytes;
                 for (int col = 0; col < width; col++) {
-                    int abgr = image.getPixel(sourceX + col, sourceY + row);
+                    int argb = image.getPixel(sourceX + col, sourceY + row);
                     int pos = rowStart + col * 4;
-                    region.put(pos, (byte) (abgr & 0xFF));
-                    region.put(pos + 1, (byte) ((abgr >> 8) & 0xFF));
-                    region.put(pos + 2, (byte) ((abgr >> 16) & 0xFF));
-                    region.put(pos + 3, (byte) ((abgr >> 24) & 0xFF));
+                    // ARGB → RGBA 字节序（Metal RGBA8Unorm 期望 R,G,B,A）
+                    region.put(pos, (byte) ((argb >> 16) & 0xFF));
+                    region.put(pos + 1, (byte) ((argb >> 8) & 0xFF));
+                    region.put(pos + 2, (byte) (argb & 0xFF));
+                    region.put(pos + 3, (byte) ((argb >> 24) & 0xFF));
                 }
             }
             region.position(0).limit(bytesPerImage);

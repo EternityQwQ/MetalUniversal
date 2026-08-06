@@ -119,6 +119,8 @@ final class MetalDevice implements GpuDevice {
             final int depthOrLayers,
             final int mipLevels
     ) {
+        com.metallum.Metallum.LOGGER.error("[diag] createTexture label={} usage=0x{} format={} {}x{}x{} mips={}",
+                label, Integer.toHexString(usage), format, width, height, depthOrLayers, mipLevels);
         return new MetalGpuTexture(this, usage, label == null ? "" : label, format, width, height, depthOrLayers, mipLevels);
     }
 
