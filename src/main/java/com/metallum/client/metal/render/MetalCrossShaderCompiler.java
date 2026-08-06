@@ -32,6 +32,7 @@ final class MetalCrossShaderCompiler {
     private static final int MSL_VERSION_4_0 = 0x040000;
     private static final Pattern VERTEX_ENTRY_PATTERN = Pattern.compile("\\bvertex\\s+\\w+\\s+(\\w+)\\s*\\(");
     private static final Pattern FRAGMENT_ENTRY_PATTERN = Pattern.compile("\\bfragment\\s+\\w+\\s+(\\w+)\\s*\\(");
+    private static final Pattern MSL_SAMPLER_PARAM_PATTERN = Pattern.compile("(\\btexture2d\\s*<[^>]+>\\s+)sampler\\b");
 
     /**
      * 在 iOS 上，Amethyst 启动器捆绑的 libMoltenVK.dylib 内部静态链接了 SPIRV-Cross，
@@ -73,6 +74,11 @@ final class MetalCrossShaderCompiler {
 
             MslShader vertexMsl = spirvToMsl(vertexSpirv, attributeFormats, enablePointSize, true, bindingPlan);
             MslShader fragmentMsl = spirvToMsl(fragmentSpirv, Map.of(), true, enableFragDepth, bindingPlan);
+
+            // SPIRV-Cross 保留 GLSL 参数名：terrain.fsh 的 sampleNearest(sampler2D sampler, ...)
+            // 生成的 MSL 中 texture2d<float> sampler 会遮蔽内置类型名 sampler → 参数改名
+            vertexMsl = new MslShader(sanitizeMsl(vertexMsl.source()), vertexMsl.activeResources());
+            fragmentMsl = new MslShader(sanitizeMsl(fragmentMsl.source()), fragmentMsl.activeResources());
 
             String vertexEntryPoint = extractEntryPoint(vertexMsl.source(), VERTEX_ENTRY_PATTERN, "main0");
             String fragmentEntryPoint = extractEntryPoint(fragmentMsl.source(), FRAGMENT_ENTRY_PATTERN, "main0");
@@ -155,6 +161,18 @@ final class MetalCrossShaderCompiler {
     private static String extractEntryPoint(final String msl, final Pattern pattern, final String fallback) {
         Matcher matcher = pattern.matcher(msl);
         return matcher.find() ? matcher.group(1) : fallback;
+    }
+
+    /**
+     * SPIRV-Cross 保留 GLSL 参数名：1.21.11 的 terrain.fsh 有 sampleNearest(sampler2D sampler, ...)，
+     * 生成的 MSL 中 `texture2d<float> sampler` 参数声明会遮蔽内置类型名 sampler（后续
+     * `sampler samplerSmplr` 解析失败："must use 'struct' tag to refer to type 'sampler'"）。
+     * 仅把"texture2d<...> 空格 sampler"形态的参数名改为 samplerTex；类型名位置的 sampler
+     * （如 `sampler samplerSmplr` 中前者）因前缀非 texture2d<...> 不被匹配，sampler2D/Sampler0
+     * 等因 \b 边界不受影响。
+     */
+    private static String sanitizeMsl(final String msl) {
+        return MSL_SAMPLER_PARAM_PATTERN.matcher(msl).replaceAll("$1samplerTex");
     }
 
     private static Map<String, VertexFormatElement.Type> vertexAttributeTypes(final RenderPipeline pipeline) {
