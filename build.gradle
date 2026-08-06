@@ -372,6 +372,13 @@ jar {
 	from("LICENSE") {
 		rename { "${it}_${project.name}"}
 	}
+
+	// 构建元数据：CI tag 构建时写入触发 tag（GITHUB_REF_NAME），本地构建为 dev。
+	// MetallumSelfUpdater 用它对比 GitHub Actions 最新 artifact 的 head_branch。
+	manifest {
+		attributes 'Implementation-Title': 'MetalUniversal',
+		           'Implementation-Build': System.getenv('GITHUB_REF_NAME') ?: 'dev'
+	}
 }
 
 // configure the maven publication

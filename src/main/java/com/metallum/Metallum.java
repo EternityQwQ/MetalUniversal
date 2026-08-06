@@ -36,5 +36,8 @@ public class Metallum implements ModInitializer, PreLaunchEntrypoint {
             LOGGER.warn("MetalUniversal 检测到 Sodium：1.21.11 的 Sodium（0.8.x）直接调用 GL API，"
                     + "与 Metal 后端互斥（无后端抽象可注入），在 Metal 主机上可能出现黑屏或崩溃，建议移除。");
         }
+
+        // 自更新：daemon 线程经 GitHub Actions artifact 检查新版并自动替换（重启生效）
+        MetallumSelfUpdater.startIfNeeded();
     }
 }
