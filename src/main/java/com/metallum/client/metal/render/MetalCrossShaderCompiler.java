@@ -417,7 +417,19 @@ final class MetalCrossShaderCompiler {
 
                 PointerBuffer pSource = stack.mallocPointer(1);
                 checkSpvc(Spvc.spvc_compiler_compile(compiler, pSource), "spvc_compiler_compile");
-                return new MslShader(MemoryUtil.memUTF8(pSource.get(0)), activeResources, outputLocations, integerInputs);
+                String msl = MemoryUtil.memUTF8(pSource.get(0));
+                // spvc 只启用了 FLIP_VERTEX_Y（LWJGL 3.3.3 未暴露 fixup_clipspace 选项），
+                // GL NDC z∈[-1,1] 未重映射为 Metal [0,1]：z<0 的三角形被 Metal 裁剪
+                // （GUI z=0 恰在边界所以正常，世界地形前方 z<0 全被裁 → 不可见）。
+                // 按 SPIRV-Cross spirv_msl.cpp 的 fixup_clipspace 公式补 clip 空间重映射
+                // （z' = (z + w) * 0.5，与 y 翻转同位置、同格式）。
+                if (msl.contains("out.gl_Position.y = -(out.gl_Position.y);")) {
+                    msl = msl.replace(
+                            "out.gl_Position.y = -(out.gl_Position.y);",
+                            "out.gl_Position.z = (out.gl_Position.z + out.gl_Position.w) * 0.5;    // Adjust clip-space for Metal\n    out.gl_Position.y = -(out.gl_Position.y);"
+                    );
+                }
+                return new MslShader(msl, activeResources, outputLocations, integerInputs);
             } finally {
                 Spvc.spvc_context_destroy(context);
             }
