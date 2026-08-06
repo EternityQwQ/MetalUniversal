@@ -293,8 +293,45 @@ final class MetalCommandEncoder implements CommandEncoder {
         Diagnostics.once("present:" + src.getLabel(),
                 "presentTexture sourceLabel={} format={} {}x{} closed={}",
                 src.getLabel(), src.getFormat(), src.getWidth(0), src.getHeight(0), src.isClosed());
+        diagReadback(src, "main-target");
         presentTextureToDrawable(device.metalLayer(), textureView);
         submit();
+    }
+
+    /**
+     * 品红诊断：把纹理内容读回 CPU（4×4 区域），打平均色与首像素。
+     * 节流 3 秒一次；异步（GPU 完成回调），buffer 在回调内释放。
+     * 用于区分"主目标被显式写成品红 / 从未被写入（未初始化）"。
+     */
+    private void diagReadback(final MetalGpuTexture texture, final String tag) {
+        if (!Diagnostics.shouldRun("rb:" + tag, 3000L)) {
+            return;
+        }
+        int w = Math.min(4, texture.getWidth(0));
+        int h = Math.min(4, texture.getHeight(0));
+        MetalGpuBuffer readback = new MetalGpuBuffer(
+                device, GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, (long) w * h * 4
+        );
+        copyTextureToBuffer(texture, readback, 0L, () -> {
+            try {
+                ByteBuffer data = readback.currentStorage();
+                int pixels = w * h;
+                long r = 0, g = 0, b = 0, a = 0;
+                for (int i = 0; i < pixels; i++) {
+                    r += data.get(i * 4) & 0xFF;
+                    g += data.get(i * 4 + 1) & 0xFF;
+                    b += data.get(i * 4 + 2) & 0xFF;
+                    a += data.get(i * 4 + 3) & 0xFF;
+                }
+                int first = Integer.reverseBytes(data.getInt(0));
+                Metallum.LOGGER.error("[diag] readback {} {}x{} avg={},{},{},{} first=0x{:08x}",
+                        tag, w, h, r / pixels, g / pixels, b / pixels, a / pixels, first);
+            } catch (Exception e) {
+                Metallum.LOGGER.error("[diag] readback {} failed: {}", tag, e.getMessage());
+            } finally {
+                readback.close();
+            }
+        }, 0, 0, 0, w, h);
     }
 
     @Override
@@ -533,6 +570,7 @@ final class MetalCommandEncoder implements CommandEncoder {
                     bytesPerImage
             );
             endEncoder();
+            diagReadback(metalDst, "upload");
         } finally {
             MemoryUtil.memFree(region);
         }

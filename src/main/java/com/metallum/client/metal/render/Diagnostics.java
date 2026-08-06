@@ -17,8 +17,13 @@ import java.util.concurrent.ConcurrentHashMap;
 final class Diagnostics {
     private static final boolean ENABLED = Boolean.parseBoolean(System.getProperty("metallum.diag", "true"));
     private static final Set<String> ONCE = ConcurrentHashMap.newKeySet();
+    private static final java.util.concurrent.ConcurrentHashMap<String, Long> LAST_RUN = new java.util.concurrent.ConcurrentHashMap<>();
 
     private Diagnostics() {
+    }
+
+    static boolean isEnabled() {
+        return ENABLED;
     }
 
     /**
@@ -28,5 +33,22 @@ final class Diagnostics {
         if (ENABLED && ONCE.add(key)) {
             Metallum.LOGGER.error("[diag] " + format, args);
         }
+    }
+
+    /**
+     * 时间窗口节流：同一 key 在 intervalMs 内只执行一次（用于高频路径的
+     * 采样式诊断——如读回纹理、统计 draw 数）。
+     */
+    static boolean shouldRun(final String key, final long intervalMs) {
+        if (!ENABLED) {
+            return false;
+        }
+        long now = System.nanoTime();
+        Long last = LAST_RUN.get(key);
+        if (last != null && now - last < intervalMs * 1_000_000L) {
+            return false;
+        }
+        LAST_RUN.put(key, now);
+        return true;
     }
 }

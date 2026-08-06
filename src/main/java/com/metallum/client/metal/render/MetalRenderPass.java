@@ -186,6 +186,7 @@ final class MetalRenderPass implements RenderPass {
 
         bindDrawState(enc);
         drawIndexedNative(enc, nativeIndexBuffer, firstIndex, indexCount, vertexOffset, instanceCount, indexType, 0);
+        countDraw();
     }
 
     @Override
@@ -231,6 +232,7 @@ final class MetalRenderPass implements RenderPass {
         } else {
             enc.drawPrimitives(primitiveType, 0, vertexCount, Math.max(1, instanceCount), 0);
         }
+        countDraw();
     }
 
     @Override
@@ -553,5 +555,15 @@ final class MetalRenderPass implements RenderPass {
         return left.buffer() == right.buffer()
                 && left.offset() == right.offset()
                 && left.length() == right.length();
+    }
+
+    // ---- draw 统计（品红诊断：确认 draw 是否真正编码） ----
+    private static final java.util.concurrent.atomic.AtomicLong TOTAL_DRAWS = new java.util.concurrent.atomic.AtomicLong();
+
+    private static void countDraw() {
+        long total = TOTAL_DRAWS.incrementAndGet();
+        if (Diagnostics.shouldRun("drawstats", 5000L)) {
+            com.metallum.Metallum.LOGGER.error("[diag] draw calls total={}", total);
+        }
     }
 }
