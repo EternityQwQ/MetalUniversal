@@ -321,6 +321,35 @@ final class MetalCommandEncoder implements CommandEncoder {
     }
 
     /**
+     * 缓冲内容 GPU 读回（几何数据诊断）：copy 到 staging 缓冲后读回，打前 64 字节 hex。
+     * 节流由调用方控制（multidraw 窗口）；回调内释放 staging。
+     */
+    void readbackBuffer(final String tag, final GpuBuffer source, final long offset, final int length) {
+        MetalGpuBuffer src = (MetalGpuBuffer) source;
+        MetalGpuBuffer staging = new MetalGpuBuffer(
+                device, GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, length
+        );
+        copyToBuffer(src.slice(offset, length), staging.slice());
+        queueForDestroy(() -> {
+            try {
+                ByteBuffer data = staging.currentStorage();
+                StringBuilder sb = new StringBuilder();
+                int words = Math.min(length, 64) / 4;
+                for (int j = 0; j < words; j++) {
+                    if (j > 0) {
+                        sb.append(' ');
+                    }
+                    sb.append(String.format("%08x", data.getInt(j * 4)));
+                }
+                Metallum.LOGGER.error("[diag] rbBuf {} len={} first={}", tag, length, sb);
+            } catch (Exception e) {
+                Metallum.LOGGER.error("[diag] rbBuf {} failed: {}", tag, e.getMessage());
+            }
+            staging.close();
+        });
+    }
+
+    /**
      * 品红诊断：把纹理内容读回 CPU（4×4 区域），打平均色与首像素。
      * 节流 3 秒一次；异步（GPU 完成回调），buffer 在回调内释放。
      * 用于区分"主目标被显式写成品红 / 从未被写入（未初始化）"。

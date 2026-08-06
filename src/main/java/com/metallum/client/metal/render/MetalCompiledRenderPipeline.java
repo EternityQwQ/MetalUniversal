@@ -273,6 +273,10 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
         return this.pipeline.getVertexFormatMode();
     }
 
+    com.mojang.blaze3d.vertex.VertexFormat getVertexFormat() {
+        return this.pipeline.getVertexFormat();
+    }
+
     int vertexBufferCount() {
         return this.vertexBufferCount;
     }

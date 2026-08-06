@@ -219,12 +219,16 @@ final class MetalRenderPass implements RenderPass {
         int firstDrawFirstIndex = -1;
         int firstDrawIndexCount = -1;
         int firstDrawSlot = -1;
+        GpuBuffer firstDrawVb = null;
+        GpuBuffer firstDrawIb = null;
         int i = 0;
         for (RenderPass.Draw<T> draw : draws) {
             if (i == 0) {
                 firstDrawFirstIndex = draw.firstIndex();
                 firstDrawIndexCount = draw.indexCount();
                 firstDrawSlot = draw.slot();
+                firstDrawVb = draw.vertexBuffer();
+                firstDrawIb = draw.indexBuffer() == null ? defaultIndexBuffer : draw.indexBuffer();
             }
             i++;
             MTLIndexType drawIndexType = MTLIndexType.from(draw.indexType() == null ? fallbackIndexType : draw.indexType());
@@ -247,8 +251,19 @@ final class MetalRenderPass implements RenderPass {
         }
         // v5 遗漏的诊断：chunk 若走 multidraw 路径，此处必现
         if (Diagnostics.shouldRun("multidraw", 5000L)) {
-            com.metallum.Metallum.LOGGER.error("[diag] multiDraw draws={} first={} idxCount={} slot={}",
-                    drawTotal, firstDrawFirstIndex, firstDrawIndexCount, firstDrawSlot);
+            com.metallum.Metallum.LOGGER.error("[diag] multiDraw draws={} first={} idxCount={} slot={} vb=0x{} size={} ib=0x{} size={}",
+                    drawTotal, firstDrawFirstIndex, firstDrawIndexCount, firstDrawSlot,
+                    firstDrawVb == null ? "null" : String.format("%x", System.identityHashCode(firstDrawVb)),
+                    firstDrawVb == null ? -1 : firstDrawVb.size(),
+                    firstDrawIb == null ? "null" : String.format("%x", System.identityHashCode(firstDrawIb)),
+                    firstDrawIb == null ? -1 : firstDrawIb.size());
+            // 顶点/索引缓冲 GPU readback：验证 chunk 几何数据是否上传、布局是否正确
+            if (firstDrawVb != null) {
+                commandEncoder.readbackBuffer("chunkVb", firstDrawVb, 0L, 128);
+            }
+            if (firstDrawIb != null) {
+                commandEncoder.readbackBuffer("chunkIb", firstDrawIb, 0L, 64);
+            }
         }
     }
 
@@ -521,6 +536,29 @@ final class MetalRenderPass implements RenderPass {
         }
 
         dirtyDescriptorMask = 0L;
+    }
+
+    /**
+     * 顶点格式摘要（name type×count @offset，stride）——对照 MSL stage_in 与缓冲布局。
+     */
+    private String describeVertexFormat() {
+        if (compiledPipeline == null) {
+            return "?";
+        }
+        com.mojang.blaze3d.vertex.VertexFormat vf = compiledPipeline.getVertexFormat();
+        StringBuilder sb = new StringBuilder();
+        sb.append("stride=").append(vf.getVertexSize()).append('[');
+        boolean first = true;
+        for (com.mojang.blaze3d.vertex.VertexFormatElement e : vf.getElements()) {
+            if (!first) {
+                sb.append(',');
+            }
+            first = false;
+            sb.append(vf.getElementName(e)).append('(')
+                    .append(e.type()).append('x').append(e.count())
+                    .append('@').append(vf.getOffset(e)).append(')');
+        }
+        return sb.append(']').toString();
     }
 
     private MTLPrimitiveType primitiveTopology() {
