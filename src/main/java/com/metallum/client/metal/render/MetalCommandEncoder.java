@@ -211,7 +211,8 @@ final class MetalCommandEncoder implements CommandEncoder {
             final @NonNull OptionalDouble clearDepth
     ) {
         MetalGpuTexture colorTex = (MetalGpuTexture) colorTexture.texture();
-        com.metallum.Metallum.LOGGER.error("[diag] createRenderPass colorLabel={} format={} {}x{} depth={} clear={}",
+        Diagnostics.once("pass:" + colorTex.getLabel() + "|" + colorTex.getFormat(),
+                "createRenderPass colorLabel={} format={} {}x{} depth={} clear={}",
                 colorTex.getLabel(), colorTex.getFormat(),
                 colorTexture.getWidth(0), colorTexture.getHeight(0),
                 depthTexture != null, clearColor.isPresent());
@@ -289,7 +290,8 @@ final class MetalCommandEncoder implements CommandEncoder {
     public void presentTexture(final @NonNull GpuTextureView textureView) {
         // 1.21.11 无 GpuSurface：present 由 CommandEncoder 直接承担，每帧末提交
         MetalGpuTexture src = (MetalGpuTexture) textureView.texture();
-        com.metallum.Metallum.LOGGER.error("[diag] presentTexture sourceLabel={} format={} {}x{} closed={}",
+        Diagnostics.once("present:" + src.getLabel(),
+                "presentTexture sourceLabel={} format={} {}x{} closed={}",
                 src.getLabel(), src.getFormat(), src.getWidth(0), src.getHeight(0), src.isClosed());
         presentTextureToDrawable(device.metalLayer(), textureView);
         submit();
