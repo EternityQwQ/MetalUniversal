@@ -63,6 +63,8 @@ final class MetalRenderPass implements RenderPass {
     private int diagMaxIndexOffset = Integer.MIN_VALUE;
     private long diagWindowStart;
     private final java.util.Map<String, String> diagLastUbufHex = new java.util.HashMap<>();
+    private GpuBuffer diagGlobalsBuffer;
+    private long diagGlobalsOffset;
     private long diagDrawCallCount;
     private int diagMinFirstVertex = Integer.MAX_VALUE;
     private int diagMaxFirstVertex = Integer.MIN_VALUE;
@@ -264,6 +266,9 @@ final class MetalRenderPass implements RenderPass {
             }
             if (firstDrawIb != null) {
                 commandEncoder.readbackBuffer("chunkIb", firstDrawIb, 0L, 64);
+            }
+            if (diagGlobalsBuffer != null) {
+                commandEncoder.readbackBuffer("globals", diagGlobalsBuffer, diagGlobalsOffset, 64);
             }
         }
     }
@@ -649,6 +654,10 @@ final class MetalRenderPass implements RenderPass {
                     binding.name(), binding.bindingIndex(), binding.stageMask(),
                     Long.toHexString(uniformBuffer.nativeHandle().address()),
                     uniformSlice.offset(), uniformSlice.length(), hex);
+        }
+        if (binding.name().equals("Globals")) {
+            diagGlobalsBuffer = uniformBuffer;
+            diagGlobalsOffset = uniformSlice.offset();
         }
         enc.setBuffer(uniformBuffer.nativeHandle(), uniformSlice.offset(), binding.bindingIndex(), binding.stageMask());
     }
