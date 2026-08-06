@@ -89,6 +89,18 @@ final class MetalCrossShaderCompiler {
             vertexMsl = new MslShader(sanitizeMsl(vertexMsl.source()), vertexMsl.activeResources(), vertexMsl.outputLocations(), vertexMsl.integerInputs());
             fragmentMsl = new MslShader(sanitizeMsl(fragmentMsl.source()), fragmentMsl.activeResources(), fragmentMsl.outputLocations(), fragmentMsl.integerInputs());
 
+            // Globals UBO 独立绑定路径（RenderSystem.setGlobalSettingsUniform）：
+            // 从 MSL 提取每个 stage 的 Globals buffer index（terrain: vertex 0 / fragment 1；glint: fragment 3）
+            java.util.Map<String, Integer> globalsBindings = new java.util.HashMap<>();
+            Integer vertexGlobals = extractGlobalsBinding(vertexMsl.source());
+            if (vertexGlobals != null) {
+                globalsBindings.put("vertex", vertexGlobals);
+            }
+            Integer fragmentGlobals = extractGlobalsBinding(fragmentMsl.source());
+            if (fragmentGlobals != null) {
+                globalsBindings.put("fragment", fragmentGlobals);
+            }
+
             String vertexEntryPoint = extractEntryPoint(vertexMsl.source(), VERTEX_ENTRY_PATTERN, "main0");
             String fragmentEntryPoint = extractEntryPoint(fragmentMsl.source(), FRAGMENT_ENTRY_PATTERN, "main0");
             List<MetalCompiledRenderPipeline.ResourceBinding> resources = buildResourceBindings(bindingPlan, vertexMsl, fragmentMsl);
@@ -100,7 +112,8 @@ final class MetalCrossShaderCompiler {
                     vertexEntryPoint,
                     fragmentEntryPoint,
                     resources,
-                    vertexMsl.integerInputs()
+                    vertexMsl.integerInputs(),
+                    globalsBindings
             );
         } catch (ShaderCompileException e) {
             throw new IllegalStateException("Failed to compile Metal cross shader for pipeline " + pipeline.getLocation(), e);
@@ -586,6 +599,16 @@ final class MetalCrossShaderCompiler {
      */
     private static boolean isBuiltInVariable(final String name) {
         return name.startsWith("gl_");
+    }
+
+    /**
+     * 从 MSL 提取 Globals UBO 的 buffer index（constant Globals& _X [[buffer(N)]]）。
+     */
+    private static Integer extractGlobalsBinding(final String msl) {
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("constant Globals& \\w+ \\[\\[buffer\\((\\d+)\\)\\]\\]")
+                .matcher(msl);
+        return matcher.find() ? Integer.valueOf(matcher.group(1)) : null;
     }
 
     record MslShader(String source, Set<String> activeResources, Map<String, Integer> outputLocations, Set<String> integerInputs) {

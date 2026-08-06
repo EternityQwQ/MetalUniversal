@@ -7,7 +7,8 @@
   "client": [
     "render.RenderSystemDeviceMixin",
     "render.GLFWSwapBuffersMixin",
-    "render.GLFWTerminateMixin"
+    "render.GLFWTerminateMixin",
+    "render.RenderSystemGlobalsMixin"
   ],
   "injectors": {
     "defaultRequire": 1

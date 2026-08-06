@@ -21,6 +21,22 @@ public final class MetalBackend {
     }
 
     /**
+     * MC 1.21.11 的 Globals UBO（CameraBlockPos/CameraOffset 等）经
+     * RenderSystem.setGlobalSettingsUniform 独立传入（不走 RenderPass.setUniform）——
+     * terrain.vsh 的 pos 计算依赖它，未绑定 → 顶点变换到绝对世界坐标 → 视锥外裁剪。
+     * 由 RenderSystemGlobalsMixin 每帧捕获。
+     */
+    private static volatile com.mojang.blaze3d.buffers.GpuBuffer globalSettingsBuffer;
+
+    public static void setGlobalSettingsBuffer(final com.mojang.blaze3d.buffers.GpuBuffer buffer) {
+        globalSettingsBuffer = buffer;
+    }
+
+    public static com.mojang.blaze3d.buffers.GpuBuffer getGlobalSettingsBuffer() {
+        return globalSettingsBuffer;
+    }
+
+    /**
      * Metal 主机判定：macOS / iOS（完整判定链，含 JVM 谎报 os.name 的 iOS 沙箱信号）。
      * 供 RenderSystemDeviceMixin 决定是否接管 device 创建。
      */

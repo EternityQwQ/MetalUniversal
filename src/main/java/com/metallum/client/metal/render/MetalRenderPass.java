@@ -543,6 +543,21 @@ final class MetalRenderPass implements RenderPass {
             }
         }
 
+        // Globals UBO 独立绑定：MC 经 RenderSystem.setGlobalSettingsUniform 传入（不走
+        // setUniform），terrain.vsh 的 pos 计算（CameraBlockPos/CameraOffset）依赖它——
+        // 未绑定 → 顶点变换到绝对世界坐标 → 视锥外裁剪 → 方块不可见。
+        com.mojang.blaze3d.buffers.GpuBuffer globalsBuffer = MetalBackend.getGlobalSettingsBuffer();
+        if (globalsBuffer != null) {
+            Integer vertexGlobals = compiledPipeline.getGlobalsBinding("vertex");
+            if (vertexGlobals != null) {
+                enc.setBuffer(((MetalGpuBuffer) globalsBuffer).nativeHandle(), 0, vertexGlobals, MetalCompiledRenderPipeline.STAGE_VERTEX);
+            }
+            Integer fragmentGlobals = compiledPipeline.getGlobalsBinding("fragment");
+            if (fragmentGlobals != null) {
+                enc.setBuffer(((MetalGpuBuffer) globalsBuffer).nativeHandle(), 0, fragmentGlobals, MetalCompiledRenderPipeline.STAGE_FRAGMENT);
+            }
+        }
+
         dirtyDescriptorMask = 0L;
     }
 

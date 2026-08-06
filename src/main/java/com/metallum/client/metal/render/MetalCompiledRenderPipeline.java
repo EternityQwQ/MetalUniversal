@@ -58,6 +58,7 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
     private final MemorySegment vertexFunction;
     private final MemorySegment fragmentFunction;
     private final Set<String> integerInputs;
+    private final java.util.Map<String, Integer> globalsBindings;
 
     MetalCompiledRenderPipeline(
             final MetalDevice device,
@@ -67,8 +68,10 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
             final String vertexEntryPoint,
             final String fragmentEntryPoint,
             final List<ResourceBinding> resources,
-            final Set<String> integerInputs
+            final Set<String> integerInputs,
+            final java.util.Map<String, Integer> globalsBindings
     ) {
+        this.globalsBindings = globalsBindings;
         this.resources = resources;
         this.resourcesByName = resources.stream().collect(java.util.stream.Collectors.toUnmodifiableMap(ResourceBinding::name, binding -> binding));
 
@@ -275,6 +278,15 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
 
     com.mojang.blaze3d.vertex.VertexFormat getVertexFormat() {
         return this.pipeline.getVertexFormat();
+    }
+
+    /**
+     * Globals UBO 的 buffer index（按 stage：vertex/fragment）——独立绑定路径，
+     * 由 MetalRenderPass.bindDrawState 每帧绑定 MetalBackend 捕获的 buffer。
+     */
+    @Nullable
+    Integer getGlobalsBinding(final String stage) {
+        return this.globalsBindings.get(stage);
     }
 
     int vertexBufferCount() {
