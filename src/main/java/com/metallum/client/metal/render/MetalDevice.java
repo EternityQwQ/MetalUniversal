@@ -34,6 +34,7 @@ import java.util.regex.Pattern;
 final class MetalDevice implements GpuDevice {
     private static final Pattern BLOCK_COMMENTS = Pattern.compile("(?s)/\\*.*?\\*/");
     private static final Pattern LINE_COMMENTS = Pattern.compile("(?m)//[^\\n]*");
+    private static final Pattern SAMPLER_IDENT_PATTERN = Pattern.compile("\\bsampler\\b");
     private final MemorySegment metalDeviceHandle;
     private final MemorySegment metalLayer;
     private final MemorySegment cocoaView;
@@ -390,7 +391,11 @@ final class MetalDevice implements GpuDevice {
     private static String prepareShaderSource(final String source, final ShaderDefines defines) {
         String stripped = BLOCK_COMMENTS.matcher(source).replaceAll("");
         stripped = LINE_COMMENTS.matcher(stripped).replaceAll("").stripLeading();
-        return GlslPreprocessor.injectDefines(stripped, defines);
+        stripped = GlslPreprocessor.injectDefines(stripped, defines);
+        // MSL 中 sampler 是内置类型名：GLSL 的 sampler 标识符（非保留字，\b 边界不会命中
+        // sampler2D/samplerCube，Sampler0 大写不受影响）统一改名，避免 SPIRV-Cross 生成
+        // texture2d<float> sampler 声明遮蔽类型（1.21.11 terrain.fsh 的 sampleNearest）
+        return SAMPLER_IDENT_PATTERN.matcher(stripped).replaceAll("samplerTex");
     }
 
     MemorySegment getOrCompileFunction(final String msl, final String entryPoint) {
