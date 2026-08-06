@@ -640,7 +640,7 @@ final class MetalRenderPass implements RenderPass {
 
         MetalGpuBuffer uniformBuffer = (MetalGpuBuffer) uniformSlice.buffer();
         // v9：UBO 内容变化时打（5s 节流兜底）——拿世界 pass 的 Projection/ChunkSection 真实矩阵
-        String hex = storageHex(uniformBuffer, 64);
+        String hex = storageHex(uniformBuffer, 192);
         String lastHex = diagLastUbufHex.get(binding.name());
         if (!hex.equals(lastHex) && Diagnostics.shouldRun("ubind:" + binding.name(), 5000L)) {
             diagLastUbufHex.put(binding.name(), hex);
