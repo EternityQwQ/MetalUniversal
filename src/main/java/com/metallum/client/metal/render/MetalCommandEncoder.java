@@ -217,16 +217,21 @@ final class MetalCommandEncoder implements CommandEncoder {
                 colorTexture.getWidth(0), colorTexture.getHeight(0),
                 depthTexture != null, clearColor.isPresent());
         Vector4fc pendingColor = pendingColorClears.get(colorTex);
+        Vector4fc colorClear;
         if (pendingColor != null && isFullTextureView(colorTexture) && clearColor.isEmpty()) {
+            // MC 1.21.11 的主目标清屏走 clearColorTexture()（pending 路径）而非 clearColor
+            // 参数：pending 必须承接为本 pass 的 clear（26.2 抄写时漏了 color 分支，
+            // 导致主目标 color 永不 clear → 未初始化纹理 → iOS 显示品红）
             pendingColorClears.remove(colorTex);
+            colorClear = pendingColor;
         } else if (pendingColor != null && clearColor.isEmpty()) {
             flushPendingClear(colorTex);
+            colorClear = null;
         } else {
             pendingColorClears.remove(colorTex);
+            colorClear = clearColor.isPresent() ? fromArgbInt(clearColor.getAsInt()) : null;
         }
         colorTex.markContentsDirty();
-
-        Vector4fc colorClear = clearColor.isPresent() ? fromArgbInt(clearColor.getAsInt()) : null;
 
         OptionalDouble effectiveDepthClear = clearDepth;
         if (depthTexture != null) {
