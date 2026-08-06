@@ -47,6 +47,8 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
     private final float depthBiasConstant;
     private final MTLPrimitiveType topology;
     private final int vertexBufferCount;
+    private final MTLCompareFunction depthCompareOp;
+    private final int depthWrite;
 
     private final MemorySegment depthStencilState;
     private volatile MemorySegment withDepthPipeline;
@@ -96,6 +98,8 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
         boolean hasDepthTest = depthTest != DepthTestFunction.NO_DEPTH_TEST;
         MTLCompareFunction depthCompareOp = MTLCompareFunction.from(depthTest);
         int depthWrite = info.isWriteDepth() ? 1 : 0;
+        this.depthCompareOp = depthCompareOp;
+        this.depthWrite = depthWrite;
         this.depthBiasScaleFactor = info.getDepthBiasScaleFactor();
         this.depthBiasConstant = info.getDepthBiasConstant();
 
@@ -236,6 +240,14 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
 
     float depthBiasConstant() {
         return this.depthBiasConstant;
+    }
+
+    MTLCompareFunction depthCompareOp() {
+        return this.depthCompareOp;
+    }
+
+    int depthWrite() {
+        return this.depthWrite;
     }
 
     MemorySegment getDepthStencilState() {

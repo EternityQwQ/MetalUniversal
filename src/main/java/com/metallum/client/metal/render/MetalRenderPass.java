@@ -202,7 +202,18 @@ final class MetalRenderPass implements RenderPass {
     ) {
         VertexFormat.IndexType fallbackIndexType = defaultIndexType == null ? VertexFormat.IndexType.SHORT : defaultIndexType;
 
+        int drawTotal = draws.size();
+        int firstDrawFirstIndex = -1;
+        int firstDrawIndexCount = -1;
+        int firstDrawSlot = -1;
+        int i = 0;
         for (RenderPass.Draw<T> draw : draws) {
+            if (i == 0) {
+                firstDrawFirstIndex = draw.firstIndex();
+                firstDrawIndexCount = draw.indexCount();
+                firstDrawSlot = draw.slot();
+            }
+            i++;
             MTLIndexType drawIndexType = MTLIndexType.from(draw.indexType() == null ? fallbackIndexType : draw.indexType());
             GpuBuffer currentIndexBuffer = draw.indexBuffer() == null ? defaultIndexBuffer : draw.indexBuffer();
 
@@ -402,8 +413,9 @@ final class MetalRenderPass implements RenderPass {
                 throw new IllegalStateException("Native pipeline is unavailable");
             }
             Diagnostics.once("pipe:" + compiledPipeline.getClass().getSimpleName() + "|" + useDepth,
-                    "bindPipeline {} useDepth={} colorFmt={} depthFmt={}",
-                    compiledPipeline.getClass().getSimpleName(), useDepth, colorAttachmentFormat(), depthAttachmentFormat());
+                    "bindPipeline {} useDepth={} colorFmt={} depthFmt={} cull={} winding={} depthOp={} depthWrite={}",
+                    compiledPipeline.getClass().getSimpleName(), useDepth, colorAttachmentFormat(), depthAttachmentFormat(),
+                    compiledPipeline.cullMode(), MTLWinding.Clockwise, compiledPipeline.depthCompareOp(), compiledPipeline.depthWrite());
             enc.setRenderPipelineState(pipelineHandle);
             pipelineDirty = false;
 

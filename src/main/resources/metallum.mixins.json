@@ -3,11 +3,11 @@
   "package": "com.metallum.mixin",
   "plugin": "com.metallum.mixin.MetallumMixinConfigPlugin",
   "compatibilityLevel": "JAVA_21",
-  "mixins": [
-  ],
+  "mixins": [],
   "client": [
     "render.RenderSystemDeviceMixin",
-    "render.GLFWSwapBuffersMixin"
+    "render.GLFWSwapBuffersMixin",
+    "render.GLFWTerminateMixin"
   ],
   "injectors": {
     "defaultRequire": 1

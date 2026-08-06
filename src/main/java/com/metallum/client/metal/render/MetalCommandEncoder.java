@@ -216,6 +216,10 @@ final class MetalCommandEncoder implements CommandEncoder {
                 colorTex.getLabel(), colorTex.getFormat(),
                 colorTexture.getWidth(0), colorTexture.getHeight(0),
                 depthTexture != null, clearColor.isPresent());
+        // 承接状态快照（pending 分支内会被 remove，先存）
+        boolean hadPendingColor = pendingColorClears.containsKey(colorTex);
+        boolean hadPendingDepth = depthTexture != null
+                && pendingDepthClears.containsKey(((MetalGpuTexture) depthTexture.texture()));
         Vector4fc pendingColor = pendingColorClears.get(colorTex);
         Vector4fc colorClear;
         if (pendingColor != null && isFullTextureView(colorTexture) && clearColor.isEmpty()) {
