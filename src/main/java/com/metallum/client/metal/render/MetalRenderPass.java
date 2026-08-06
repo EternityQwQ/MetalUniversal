@@ -54,22 +54,6 @@ final class MetalRenderPass implements RenderPass {
     private boolean scissorDirty = true;
     private boolean vertexBuffersDirty = true;
     private boolean pipelineDirty = true;
-    private long diagDrawCount;
-    private int diagMaxIndexCount;
-    private int diagU32Count;
-    private int diagMinBaseVertex = Integer.MAX_VALUE;
-    private int diagMaxBaseVertex = Integer.MIN_VALUE;
-    private int diagMinIndexOffset = Integer.MAX_VALUE;
-    private int diagMaxIndexOffset = Integer.MIN_VALUE;
-    private long diagWindowStart;
-    private final java.util.Map<String, String> diagLastUbufHex = new java.util.HashMap<>();
-    private GpuBuffer diagGlobalsBuffer;
-    private long diagGlobalsOffset;
-    private long diagDrawCallCount;
-    private int diagMinFirstVertex = Integer.MAX_VALUE;
-    private int diagMaxFirstVertex = Integer.MIN_VALUE;
-    private int diagMinVertexCount = Integer.MAX_VALUE;
-    private int diagMaxVertexCount = Integer.MIN_VALUE;
 
     MetalRenderPass(
             final MetalDevice device,
@@ -205,7 +189,6 @@ final class MetalRenderPass implements RenderPass {
 
         bindDrawState(enc);
         drawIndexedNative(enc, nativeIndexBuffer, indexOffset, indexCount, baseVertex, instanceCount, indexType, 0);
-        countDraw();
     }
 
     @Override
@@ -218,21 +201,8 @@ final class MetalRenderPass implements RenderPass {
     ) {
         VertexFormat.IndexType fallbackIndexType = defaultIndexType == null ? VertexFormat.IndexType.SHORT : defaultIndexType;
 
-        int drawTotal = draws.size();
-        int firstDrawFirstIndex = -1;
-        int firstDrawIndexCount = -1;
-        int firstDrawSlot = -1;
-        GpuBuffer firstDrawVb = null;
-        GpuBuffer firstDrawIb = null;
         int i = 0;
         for (RenderPass.Draw<T> draw : draws) {
-            if (i == 0) {
-                firstDrawFirstIndex = draw.firstIndex();
-                firstDrawIndexCount = draw.indexCount();
-                firstDrawSlot = draw.slot();
-                firstDrawVb = draw.vertexBuffer();
-                firstDrawIb = draw.indexBuffer() == null ? defaultIndexBuffer : draw.indexBuffer();
-            }
             i++;
             MTLIndexType drawIndexType = MTLIndexType.from(draw.indexType() == null ? fallbackIndexType : draw.indexType());
             GpuBuffer currentIndexBuffer = draw.indexBuffer() == null ? defaultIndexBuffer : draw.indexBuffer();
@@ -252,25 +222,6 @@ final class MetalRenderPass implements RenderPass {
             // 1.21.11 的 Draw 无 baseVertex 字段：顶点偏移恒为 0
             drawIndexedNative(enc, nativeIndexBuffer, draw.firstIndex(), draw.indexCount(), 0, 1, drawIndexType, 0);
         }
-        // v5 遗漏的诊断：chunk 若走 multidraw 路径，此处必现
-        if (Diagnostics.shouldRun("multidraw", 5000L)) {
-            com.metallum.Metallum.LOGGER.error("[diag] multiDraw draws={} first={} idxCount={} slot={} vb=0x{} size={} ib=0x{} size={}",
-                    drawTotal, firstDrawFirstIndex, firstDrawIndexCount, firstDrawSlot,
-                    firstDrawVb == null ? "null" : String.format("%x", System.identityHashCode(firstDrawVb)),
-                    firstDrawVb == null ? -1 : firstDrawVb.size(),
-                    firstDrawIb == null ? "null" : String.format("%x", System.identityHashCode(firstDrawIb)),
-                    firstDrawIb == null ? -1 : firstDrawIb.size());
-            // 顶点/索引缓冲 GPU readback：验证 chunk 几何数据是否上传、布局是否正确
-            if (firstDrawVb != null) {
-                commandEncoder.readbackBuffer("chunkVb", firstDrawVb, 0L, 128);
-            }
-            if (firstDrawIb != null) {
-                commandEncoder.readbackBuffer("chunkIb", firstDrawIb, 0L, 64);
-            }
-            if (diagGlobalsBuffer != null) {
-                commandEncoder.readbackBuffer("globals", diagGlobalsBuffer, diagGlobalsOffset, 64);
-            }
-        }
     }
 
     @Override
@@ -281,30 +232,11 @@ final class MetalRenderPass implements RenderPass {
 
         bindDrawState(enc);
 
-        // 统计：1.21.11 chunk 渲染走 draw()（非索引路径），参数范围用于定位画不出根因
-        diagDrawCallCount++;
-        diagMinFirstVertex = Math.min(diagMinFirstVertex, firstVertex);
-        diagMaxFirstVertex = Math.max(diagMaxFirstVertex, firstVertex);
-        diagMinVertexCount = Math.min(diagMinVertexCount, vertexCount);
-        diagMaxVertexCount = Math.max(diagMaxVertexCount, vertexCount);
-        if (Diagnostics.shouldRun("drawstat", 5000L)) {
-            com.metallum.Metallum.LOGGER.error("[diag] drawStat draws={} firstVtx=[{}..{}] vtxCount=[{}..{}] mode={}",
-                    diagDrawCallCount, diagMinFirstVertex, diagMaxFirstVertex,
-                    diagMinVertexCount, diagMaxVertexCount,
-                    compiledPipeline == null ? "?" : compiledPipeline.getVertexFormatMode());
-            diagDrawCallCount = 0;
-            diagMinFirstVertex = Integer.MAX_VALUE;
-            diagMaxFirstVertex = Integer.MIN_VALUE;
-            diagMinVertexCount = Integer.MAX_VALUE;
-            diagMaxVertexCount = Integer.MIN_VALUE;
-        }
-
         if (primitiveType == MTLPrimitiveType.TriangleFan) {
             drawTriangleFan(enc, firstVertex, vertexCount, 1, 0);
         } else {
             enc.drawPrimitives(primitiveType, firstVertex, vertexCount, 1, 0);
         }
-        countDraw();
     }
 
     @Override
@@ -383,11 +315,6 @@ final class MetalRenderPass implements RenderPass {
 
             MetalGpuBuffer nativeVertexBuffer = (MetalGpuBuffer) vertexBuffer.buffer();
             int metalSlot = firstSlot + slot;
-            Diagnostics.once("vbuf:" + metalSlot,
-                    "pushVertexBuffers slot={} metalSlot={} handle=0x{} offset={} closed={} size={} first16={}",
-                    slot, metalSlot, Long.toHexString(nativeVertexBuffer.nativeHandle().address()),
-                    vertexBuffer.offset(), nativeVertexBuffer.isClosed(), vertexBuffer.length(),
-                    storageHex(nativeVertexBuffer, 16));
             enc.setBuffer(nativeVertexBuffer.nativeHandle(), vertexBuffer.offset(), metalSlot, MetalCompiledRenderPipeline.STAGE_VERTEX);
         }
     }
@@ -429,37 +356,6 @@ final class MetalRenderPass implements RenderPass {
             final int baseInstance
     ) {
         MTLPrimitiveType primitiveType = primitiveTopology();
-        // 窗口统计（5s）：聚合 chunk 大 draw 参数，替代"只显示窗口第一条"（GUI 小 draw 曾独占）
-        long now = System.nanoTime();
-        if (diagWindowStart == 0L) {
-            diagWindowStart = now;
-        }
-        long elapsedMs = (now - diagWindowStart) / 1_000_000L;
-        if (elapsedMs >= 5000L) {
-            if (diagDrawCount > 0) {
-                com.metallum.Metallum.LOGGER.error("[diag] drawIdxStat prim={} draws={} maxIdx={} u32={} baseVtx=[{},{}] idxOff=[{},{}]",
-                        primitiveType, diagDrawCount, diagMaxIndexCount, diagU32Count,
-                        diagMinBaseVertex, diagMaxBaseVertex, diagMinIndexOffset, diagMaxIndexOffset);
-            }
-            diagWindowStart = now;
-            diagDrawCount = 0;
-            diagMaxIndexCount = 0;
-            diagU32Count = 0;
-            diagMinBaseVertex = Integer.MAX_VALUE;
-            diagMaxBaseVertex = Integer.MIN_VALUE;
-            diagMinIndexOffset = Integer.MAX_VALUE;
-            diagMaxIndexOffset = Integer.MIN_VALUE;
-        }
-        diagDrawCount++;
-        diagMaxIndexCount = Math.max(diagMaxIndexCount, indexCount);
-        if (indexType == MTLIndexType.UInt32) {
-            diagU32Count++;
-        }
-        diagMinBaseVertex = Math.min(diagMinBaseVertex, baseVertex);
-        diagMaxBaseVertex = Math.max(diagMaxBaseVertex, baseVertex);
-        diagMinIndexOffset = Math.min(diagMinIndexOffset, firstIndex);
-        diagMaxIndexOffset = Math.max(diagMaxIndexOffset, firstIndex);
-
         long indexOffsetBytes = (long) firstIndex * indexType.bytes;
         if (primitiveType == MTLPrimitiveType.TriangleFan) {
             long fanSize = Math.multiplyExact(Math.multiplyExact((long) indexCount - 2L, 3L), Integer.BYTES);
@@ -494,13 +390,6 @@ final class MetalRenderPass implements RenderPass {
             if (MetalNativeBridge.isNullHandle(pipelineHandle)) {
                 throw new IllegalStateException("Native pipeline is unavailable");
             }
-            Diagnostics.once("pipe:" + compiledPipeline.getClass().getSimpleName() + "|" + useDepth
-                            + "|" + compiledPipeline.depthCompareOp() + "|" + compiledPipeline.depthWrite()
-                            + "|" + compiledPipeline.cullMode() + "|" + describeVertexFormat(),
-                    "bindPipeline {} useDepth={} colorFmt={} depthFmt={} cull={} winding={} depthOp={} depthWrite={} vf={}",
-                    compiledPipeline.getClass().getSimpleName(), useDepth, colorAttachmentFormat(), depthAttachmentFormat(),
-                    compiledPipeline.cullMode(), MTLWinding.Clockwise, compiledPipeline.depthCompareOp(), compiledPipeline.depthWrite(),
-                    describeVertexFormat());
             enc.setRenderPipelineState(pipelineHandle);
             pipelineDirty = false;
 
@@ -561,29 +450,6 @@ final class MetalRenderPass implements RenderPass {
         dirtyDescriptorMask = 0L;
     }
 
-    /**
-     * 顶点格式摘要（name type×count @offset，stride）——对照 MSL stage_in 与缓冲布局。
-     */
-    private String describeVertexFormat() {
-        if (compiledPipeline == null) {
-            return "?";
-        }
-        com.mojang.blaze3d.vertex.VertexFormat vf = compiledPipeline.getVertexFormat();
-        StringBuilder sb = new StringBuilder();
-        sb.append("stride=").append(vf.getVertexSize()).append('[');
-        boolean first = true;
-        for (com.mojang.blaze3d.vertex.VertexFormatElement e : vf.getElements()) {
-            if (!first) {
-                sb.append(',');
-            }
-            first = false;
-            sb.append(vf.getElementName(e)).append('(')
-                    .append(e.type()).append('x').append(e.count())
-                    .append('@').append(vf.getOffset(e)).append(')');
-        }
-        return sb.append(']').toString();
-    }
-
     private MTLPrimitiveType primitiveTopology() {
         if (compiledPipeline == null) {
             throw new IllegalStateException("Pipeline is missing");
@@ -636,12 +502,6 @@ final class MetalRenderPass implements RenderPass {
 
             MetalGpuTextureView textureView = (MetalGpuTextureView) textureBinding.textureView();
             MetalGpuSampler sampler = (MetalGpuSampler) textureBinding.sampler();
-            Diagnostics.once("texbind:" + binding.name(),
-                    "pushDescriptor SAMPLED_IMAGE name={} idx={} stage=0x{} texHandle=0x{} smpHandle=0x{} texClosed={}",
-                    binding.name(), binding.bindingIndex(), binding.stageMask(),
-                    Long.toHexString(textureView.nativeHandle().address()),
-                    Long.toHexString(sampler.nativeHandle().address()),
-                    textureBinding.textureView().isClosed());
             enc.setTextureAndSampler(textureView.nativeHandle(), sampler.nativeHandle(), binding.bindingIndex(), binding.stageMask());
             return;
         }
@@ -660,20 +520,6 @@ final class MetalRenderPass implements RenderPass {
         }
 
         MetalGpuBuffer uniformBuffer = (MetalGpuBuffer) uniformSlice.buffer();
-        // v9：UBO 内容变化时打（5s 节流兜底）——拿世界 pass 的 Projection/ChunkSection 真实矩阵
-        String hex = storageHex(uniformBuffer, 192);
-        String lastHex = diagLastUbufHex.get(binding.name());
-        if (!hex.equals(lastHex) && Diagnostics.shouldRun("ubind:" + binding.name(), 5000L)) {
-            diagLastUbufHex.put(binding.name(), hex);
-            com.metallum.Metallum.LOGGER.error("[diag] pushDescriptor UNIFORM_BUFFER name={} idx={} stage=0x{} handle=0x{} offset={} len={} first64={}",
-                    binding.name(), binding.bindingIndex(), binding.stageMask(),
-                    Long.toHexString(uniformBuffer.nativeHandle().address()),
-                    uniformSlice.offset(), uniformSlice.length(), hex);
-        }
-        if (binding.name().equals("Globals")) {
-            diagGlobalsBuffer = uniformBuffer;
-            diagGlobalsOffset = uniformSlice.offset();
-        }
         enc.setBuffer(uniformBuffer.nativeHandle(), uniformSlice.offset(), binding.bindingIndex(), binding.stageMask());
     }
 
@@ -725,35 +571,5 @@ final class MetalRenderPass implements RenderPass {
         return left.buffer() == right.buffer()
                 && left.offset() == right.offset()
                 && left.length() == right.length();
-    }
-
-    // ---- draw 统计（品红诊断：确认 draw 是否真正编码） ----
-    private static final java.util.concurrent.atomic.AtomicLong TOTAL_DRAWS = new java.util.concurrent.atomic.AtomicLong();
-
-    private static void countDraw() {
-        long total = TOTAL_DRAWS.incrementAndGet();
-        if (Diagnostics.shouldRun("drawstats", 5000L)) {
-            com.metallum.Metallum.LOGGER.error("[diag] draw calls total={}", total);
-        }
-    }
-
-    /**
-     * CPU 可访问缓冲的内容 hex 摘要（Shared storage 直接读；Private 返回 "n/a"）。
-     */
-    private static String storageHex(final MetalGpuBuffer buffer, final int maxBytes) {
-        try {
-            java.nio.ByteBuffer storage = buffer.currentStorage();
-            if (storage == null) {
-                return "null";
-            }
-            int n = Math.min(storage.remaining(), maxBytes);
-            StringBuilder sb = new StringBuilder(n * 2);
-            for (int i = 0; i < n; i++) {
-                sb.append(String.format("%02x", storage.get(storage.position() + i) & 0xFF));
-            }
-            return sb.toString();
-        } catch (Exception e) {
-            return "n/a(" + e.getClass().getSimpleName() + ")";
-        }
     }
 }

@@ -55,7 +55,6 @@ final class MetalCommandEncoder implements CommandEncoder {
     private final Long2ObjectOpenHashMap<java.util.ArrayDeque<MemorySegment>> dynamicBackingPool = new Long2ObjectOpenHashMap<>();
     private static final int MAX_POOLED_DYNAMIC_BACKINGS_PER_SIZE = 8;
     @Nullable
-    private MetalGpuTexture lastDepthTexture;
 
     MetalCommandEncoder(final MetalDevice device) {
         this.device = device;
@@ -213,11 +212,6 @@ final class MetalCommandEncoder implements CommandEncoder {
             final @NonNull OptionalDouble clearDepth
     ) {
         MetalGpuTexture colorTex = (MetalGpuTexture) colorTexture.texture();
-        Diagnostics.once("pass:" + colorTex.getLabel() + "|" + colorTex.getFormat(),
-                "createRenderPass colorLabel={} format={} {}x{} depth={} clear={}",
-                colorTex.getLabel(), colorTex.getFormat(),
-                colorTexture.getWidth(0), colorTexture.getHeight(0),
-                depthTexture != null, clearColor.isPresent());
         // 承接状态快照（pending 分支内会被 remove，先存）
         boolean hadPendingColor = pendingColorClears.containsKey(colorTex);
         boolean hadPendingDepth = depthTexture != null
@@ -254,13 +248,6 @@ final class MetalCommandEncoder implements CommandEncoder {
             metalDepth.markContentsDirty();
         }
 
-        if (Diagnostics.shouldRun("passclear", 3000L)) {
-            com.metallum.Metallum.LOGGER.error("[diag] passclear colorArg={} pendingColor={} colorTaken={} depth={} pendingDepth={} depthClear={}",
-                    clearColor.isPresent(), hadPendingColor, colorClear != null,
-                    depthTexture != null, hadPendingDepth, effectiveDepthClear.isPresent());
-        }
-
-        this.lastDepthTexture = depthTexture == null ? null : (MetalGpuTexture) depthTexture.texture();
 
         MetalRenderPass renderPass = new MetalRenderPass(
                 device,
@@ -309,81 +296,10 @@ final class MetalCommandEncoder implements CommandEncoder {
     public void presentTexture(final @NonNull GpuTextureView textureView) {
         // 1.21.11 无 GpuSurface：present 由 CommandEncoder 直接承担，每帧末提交
         MetalGpuTexture src = (MetalGpuTexture) textureView.texture();
-        Diagnostics.once("present:" + src.getLabel(),
-                "presentTexture sourceLabel={} format={} {}x{} closed={}",
-                src.getLabel(), src.getFormat(), src.getWidth(0), src.getHeight(0), src.isClosed());
-        diagReadback(src, "main-target");
-        if (lastDepthTexture != null) {
-            diagReadbackDepth(lastDepthTexture, "main-depth");
-        }
         presentTextureToDrawable(device.metalLayer(), textureView);
         submit();
     }
 
-    /**
-     * 缓冲内容 GPU 读回（几何数据诊断）：copy 到 staging 缓冲后读回，打前 64 字节 hex。
-     * 节流由调用方控制（multidraw 窗口）；回调内释放 staging。
-     */
-    void readbackBuffer(final String tag, final GpuBuffer source, final long offset, final int length) {
-        MetalGpuBuffer src = (MetalGpuBuffer) source;
-        MetalGpuBuffer staging = new MetalGpuBuffer(
-                device, GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, length
-        );
-        copyToBuffer(src.slice(offset, length), staging.slice());
-        queueForDestroy(() -> {
-            try {
-                ByteBuffer data = staging.currentStorage();
-                StringBuilder sb = new StringBuilder();
-                int words = Math.min(length, 64) / 4;
-                for (int j = 0; j < words; j++) {
-                    if (j > 0) {
-                        sb.append(' ');
-                    }
-                    sb.append(String.format("%08x", data.getInt(j * 4)));
-                }
-                Metallum.LOGGER.error("[diag] rbBuf {} len={} first={}", tag, length, sb);
-            } catch (Exception e) {
-                Metallum.LOGGER.error("[diag] rbBuf {} failed: {}", tag, e.getMessage());
-            }
-            staging.close();
-        });
-    }
-
-    /**
-     * 品红诊断：把纹理内容读回 CPU（4×4 区域），打平均色与首像素。
-     * 节流 3 秒一次；异步（GPU 完成回调），buffer 在回调内释放。
-     * 用于区分"主目标被显式写成品红 / 从未被写入（未初始化）"。
-     */
-    private void diagReadback(final MetalGpuTexture texture, final String tag) {
-        if (!Diagnostics.shouldRun("rb:" + tag, 3000L)) {
-            return;
-        }
-        int w = Math.min(4, texture.getWidth(0));
-        int h = Math.min(4, texture.getHeight(0));
-        MetalGpuBuffer readback = new MetalGpuBuffer(
-                device, GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, (long) w * h * 4
-        );
-        copyTextureToBuffer(texture, readback, 0L, () -> {
-            try {
-                ByteBuffer data = readback.currentStorage();
-                int pixels = w * h;
-                long r = 0, g = 0, b = 0, a = 0;
-                for (int i = 0; i < pixels; i++) {
-                    r += data.get(i * 4) & 0xFF;
-                    g += data.get(i * 4 + 1) & 0xFF;
-                    b += data.get(i * 4 + 2) & 0xFF;
-                    a += data.get(i * 4 + 3) & 0xFF;
-                }
-                int first = Integer.reverseBytes(data.getInt(0));
-                Metallum.LOGGER.error("[diag] readback {} {}x{} avg={},{},{},{} first=0x{:08x}",
-                        tag, w, h, r / pixels, g / pixels, b / pixels, a / pixels, first);
-            } catch (Exception e) {
-                Metallum.LOGGER.error("[diag] readback {} failed: {}", tag, e.getMessage());
-            } finally {
-                readback.close();
-            }
-        }, 0, 0, 0, w, h);
-    }
 
     @Override
     public void clearColorTexture(final @NonNull GpuTexture colorTexture, final int clearColor) {
@@ -865,39 +781,6 @@ final class MetalCommandEncoder implements CommandEncoder {
      * 深度纹理读回（Depth32Float）：主 pass 后读 4×4 采样，看 clear 值与是否被
      * 方块写入。均匀=只有 clear（方块未写深度）；非均匀=方块渲染了。
      */
-    private void diagReadbackDepth(final MetalGpuTexture texture, final String tag) {
-        if (!Diagnostics.shouldRun("rb:" + tag, 3000L)) {
-            return;
-        }
-        int w = Math.min(4, texture.getWidth(0));
-        int h = Math.min(4, texture.getHeight(0));
-        MetalGpuBuffer readback = new MetalGpuBuffer(
-                device, GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, (long) w * h * 4
-        );
-        copyTextureToBuffer(texture, readback, 0L, () -> {
-            try {
-                ByteBuffer data = readback.currentStorage();
-                int pixels = w * h;
-                double sum = 0.0;
-                float min = Float.MAX_VALUE;
-                float max = -Float.MAX_VALUE;
-                for (int i = 0; i < pixels; i++) {
-                    float v = data.getFloat(i * 4);
-                    sum += v;
-                    min = Math.min(min, v);
-                    max = Math.max(max, v);
-                }
-                float first = data.getFloat(0);
-                Metallum.LOGGER.error("[diag] readbackDepth {} {}x{} avg={} min={} max={} first={}",
-                        tag, w, h, (float) (sum / pixels), min, max, first);
-            } catch (Exception e) {
-                Metallum.LOGGER.error("[diag] readbackDepth {} failed: {}", tag, e.getMessage());
-            } finally {
-                readback.close();
-            }
-        }, 0, 0, 0, w, h);
-    }
-
     private static boolean isFullTextureView(final GpuTextureView textureView) {
         return textureView.baseMipLevel() == 0
                 && textureView.mipLevels() >= textureView.texture().getMipLevels()

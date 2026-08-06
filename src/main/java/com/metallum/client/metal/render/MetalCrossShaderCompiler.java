@@ -441,32 +441,12 @@ final class MetalCrossShaderCompiler {
                             "out.gl_Position.y = -(out.gl_Position.y);",
                             "out.gl_Position.z = (out.gl_Position.z + out.gl_Position.w) * 0.5;    // Adjust clip-space for Metal\n    out.gl_Position.y = -(out.gl_Position.y);"
                     );
-                    if (!diagClipspaceLogged) {
-                        diagClipspaceLogged = true;
-                        com.metallum.Metallum.LOGGER.error("[diag] clipspace fix applied (z = (z+w)*0.5 inserted)");
-                    }
-                } else {
-                    if (!diagClipspaceLogged) {
-                        diagClipspaceLogged = true;
-                        com.metallum.Metallum.LOGGER.error("[diag] clipspace fix NOT applied: y-flip pattern not found in MSL; first pos line: {}", firstPositionLine(msl));
-                    }
                 }
                 return new MslShader(msl, activeResources, outputLocations, integerInputs);
             } finally {
                 Spvc.spvc_context_destroy(context);
             }
         }
-    }
-
-    private static boolean diagClipspaceLogged = false;
-
-    private static String firstPositionLine(final String msl) {
-        for (String line : msl.split("\n")) {
-            if (line.contains("gl_Position")) {
-                return line.trim();
-            }
-        }
-        return "(no gl_Position line found)";
     }
 
     private static void rebindResourceType(
