@@ -1158,6 +1158,10 @@ public func metallum_MTLRenderCommandEncoder_setScissorRect(
     encoder.setScissorRect(MTLScissorRect(x: Int(x), y: Int(y), width: Int(width), height: Int(height)))
 }
 
+// v11 诊断：Metal 侧 draw 命令确认（节流 5s，防 iOS 控制台刷屏）
+private var diagLastDrawLog: Double = -10
+private var diagDrawCount: UInt64 = 0
+
 @_cdecl("metallum_MTLRenderCommandEncoder_drawPrimitives")
 public func metallum_MTLRenderCommandEncoder_drawPrimitives(
     _ encoder: MTLRenderCommandEncoder,

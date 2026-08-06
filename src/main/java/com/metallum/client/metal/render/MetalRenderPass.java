@@ -492,9 +492,10 @@ final class MetalRenderPass implements RenderPass {
             Diagnostics.once("pipe:" + compiledPipeline.getClass().getSimpleName() + "|" + useDepth
                             + "|" + compiledPipeline.depthCompareOp() + "|" + compiledPipeline.depthWrite()
                             + "|" + compiledPipeline.cullMode(),
-                    "bindPipeline {} useDepth={} colorFmt={} depthFmt={} cull={} winding={} depthOp={} depthWrite={}",
+                    "bindPipeline {} useDepth={} colorFmt={} depthFmt={} cull={} winding={} depthOp={} depthWrite={} vf={}",
                     compiledPipeline.getClass().getSimpleName(), useDepth, colorAttachmentFormat(), depthAttachmentFormat(),
-                    compiledPipeline.cullMode(), MTLWinding.Clockwise, compiledPipeline.depthCompareOp(), compiledPipeline.depthWrite());
+                    compiledPipeline.cullMode(), MTLWinding.Clockwise, compiledPipeline.depthCompareOp(), compiledPipeline.depthWrite(),
+                    describeVertexFormat());
             enc.setRenderPipelineState(pipelineHandle);
             pipelineDirty = false;
 
