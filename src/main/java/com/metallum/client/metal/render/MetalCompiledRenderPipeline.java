@@ -107,6 +107,28 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
 
         this.vertexFunction = device.getOrCompileFunction(vertexMsl, vertexEntryPoint);
         this.fragmentFunction = device.getOrCompileFunction(fragmentMsl, fragmentEntryPoint);
+        Diagnostics.once("msl:" + info.getLocation(),
+                "MSL pipeline {} vEntry={} fEntry={}\n--- VERTEX ---\n{}\n--- FRAGMENT ---\n{}",
+                info.getLocation(), vertexEntryPoint, fragmentEntryPoint,
+                dumpMslHead(vertexMsl), dumpMslHead(fragmentMsl));
+    }
+
+    private static String dumpMslHead(final String msl) {
+        String[] lines = msl.split("\n");
+        StringBuilder sb = new StringBuilder();
+        int shown = 0;
+        for (String line : lines) {
+            String t = line.trim();
+            if (t.startsWith("vertex ") || t.startsWith("fragment ")
+                    || t.contains("[[texture(") || t.contains("[[buffer(")
+                    || t.contains("[[user(") || t.contains("[[stage_in")) {
+                sb.append(t).append("\n");
+                if (++shown >= 12) {
+                    break;
+                }
+            }
+        }
+        return sb.toString();
     }
 
     /**

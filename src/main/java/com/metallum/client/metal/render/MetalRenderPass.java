@@ -311,6 +311,11 @@ final class MetalRenderPass implements RenderPass {
 
             MetalGpuBuffer nativeVertexBuffer = (MetalGpuBuffer) vertexBuffer.buffer();
             int metalSlot = firstSlot + slot;
+            Diagnostics.once("vbuf:" + slot,
+                    "pushVertexBuffers slot={} metalSlot={} handle=0x{} offset={} closed={} size={} first16={}",
+                    slot, metalSlot, Long.toHexString(nativeVertexBuffer.nativeHandle().address()),
+                    vertexBuffer.offset(), nativeVertexBuffer.isClosed(), vertexBuffer.length(),
+                    storageHex(nativeVertexBuffer, 16));
             enc.setBuffer(nativeVertexBuffer.nativeHandle(), vertexBuffer.offset(), metalSlot, MetalCompiledRenderPipeline.STAGE_VERTEX);
         }
     }
@@ -352,6 +357,11 @@ final class MetalRenderPass implements RenderPass {
             final int baseInstance
     ) {
         MTLPrimitiveType primitiveType = primitiveTopology();
+        if (Diagnostics.shouldRun("drawidx", 5000L)) {
+            com.metallum.Metallum.LOGGER.error("[diag] drawIndexedNative prim={} idxBuf=0x{} idxType={} idxCount={} firstIdx={} baseVtx={} inst={}",
+                    primitiveType, Long.toHexString(nativeIndexBuffer.nativeHandle().address()),
+                    indexType, indexCount, firstIndex, baseVertex, instanceCount);
+        }
 
         long indexOffsetBytes = (long) firstIndex * indexType.bytes;
         if (primitiveType == MTLPrimitiveType.TriangleFan) {
@@ -486,6 +496,12 @@ final class MetalRenderPass implements RenderPass {
 
             MetalGpuTextureView textureView = (MetalGpuTextureView) textureBinding.textureView();
             MetalGpuSampler sampler = (MetalGpuSampler) textureBinding.sampler();
+            Diagnostics.once("texbind:" + binding.name(),
+                    "pushDescriptor SAMPLED_IMAGE name={} idx={} stage=0x{} texHandle=0x{} smpHandle=0x{} texClosed={}",
+                    binding.name(), binding.bindingIndex(), binding.stageMask(),
+                    Long.toHexString(textureView.nativeHandle().address()),
+                    Long.toHexString(sampler.nativeHandle().address()),
+                    textureBinding.textureView().isClosed());
             enc.setTextureAndSampler(textureView.nativeHandle(), sampler.nativeHandle(), binding.bindingIndex(), binding.stageMask());
             return;
         }
@@ -504,6 +520,12 @@ final class MetalRenderPass implements RenderPass {
         }
 
         MetalGpuBuffer uniformBuffer = (MetalGpuBuffer) uniformSlice.buffer();
+        Diagnostics.once("ubind:" + binding.name(),
+                "pushDescriptor UNIFORM_BUFFER name={} idx={} stage=0x{} handle=0x{} offset={} len={} first64={}",
+                binding.name(), binding.bindingIndex(), binding.stageMask(),
+                Long.toHexString(uniformBuffer.nativeHandle().address()),
+                uniformSlice.offset(), uniformSlice.length(),
+                storageHex(uniformBuffer, 64));
         enc.setBuffer(uniformBuffer.nativeHandle(), uniformSlice.offset(), binding.bindingIndex(), binding.stageMask());
     }
 
@@ -564,6 +586,26 @@ final class MetalRenderPass implements RenderPass {
         long total = TOTAL_DRAWS.incrementAndGet();
         if (Diagnostics.shouldRun("drawstats", 5000L)) {
             com.metallum.Metallum.LOGGER.error("[diag] draw calls total={}", total);
+        }
+    }
+
+    /**
+     * CPU 可访问缓冲的内容 hex 摘要（Shared storage 直接读；Private 返回 "n/a"）。
+     */
+    private static String storageHex(final MetalGpuBuffer buffer, final int maxBytes) {
+        try {
+            java.nio.ByteBuffer storage = buffer.currentStorage();
+            if (storage == null) {
+                return "null";
+            }
+            int n = Math.min(storage.remaining(), maxBytes);
+            StringBuilder sb = new StringBuilder(n * 2);
+            for (int i = 0; i < n; i++) {
+                sb.append(String.format("%02x", storage.get(storage.position() + i) & 0xFF));
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return "n/a(" + e.getClass().getSimpleName() + ")";
         }
     }
 }
