@@ -67,6 +67,7 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
     private final MemorySegment depthStencilState;
     private final boolean hasDepthStencilState;
     private final MTLPixelFormat[] colorFormats;
+    private final List<MTLPixelFormat> colorFormatsView;
     private final Map<PipelineSignature, MemorySegment> pipelineStates;
     private final MemorySegment withoutDepthPipeline;
     // Lazy-variant support (S9C, active only with metallum.opt.asyncPrecompile):
@@ -201,6 +202,7 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
             ColorTargetState target = colorTargets[index];
             this.colorFormats[index] = target == null ? MTLPixelFormat.Invalid : MTLPixelFormat.from(target.format());
         }
+        this.colorFormatsView = List.of(this.colorFormats);
 
         this.device = device;
         this.info = info;
@@ -336,7 +338,7 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
     }
 
     private PipelineSignature signatureFor(final MTLPixelFormat depthFormat, final MTLPixelFormat stencilFormat) {
-        return new PipelineSignature(List.copyOf(Arrays.asList(this.colorFormats)), depthFormat, stencilFormat, 1);
+        return new PipelineSignature(this.colorFormatsView, depthFormat, stencilFormat, 1);
     }
 
     /**
@@ -525,7 +527,7 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
     }
 
     MTLPixelFormat[] colorAttachmentFormats() {
-        return this.colorFormats.clone();
+        return this.colorFormats;
     }
 
     MTLCullMode cullMode() {
@@ -556,13 +558,19 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
         return validationShaderIds;
     }
 
+    private static final char[] HEX_DIGITS = {
+            '0', '1', '2', '3', '4', '5', '6', '7',
+            '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'
+    };
+
     private static String sha256(final String value) {
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256")
                     .digest(value.getBytes(StandardCharsets.UTF_8));
             StringBuilder result = new StringBuilder(digest.length * 2);
             for (byte item : digest) {
-                result.append(String.format(java.util.Locale.ROOT, "%02x", item));
+                int unsigned = item & 0xFF;
+                result.append(HEX_DIGITS[unsigned >>> 4]).append(HEX_DIGITS[unsigned & 0x0F]);
             }
             return result.toString();
         } catch (NoSuchAlgorithmException exception) {

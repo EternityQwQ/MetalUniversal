@@ -99,6 +99,7 @@ final class IrisMetalUniformValues implements AutoCloseable {
     private final LongSupplier gameTimeSource;
     private final boolean strict;
     private final List<Block> blocks = new ArrayList<>();
+    private final java.util.Map<Object, Block> blocksByToken = new java.util.HashMap<>();
     private final Set<String> unsupported = new HashSet<>();
     private final Matrix4f previousModelView = new Matrix4f();
     private final Matrix4f previousProjection = new Matrix4f();
@@ -386,27 +387,28 @@ final class IrisMetalUniformValues implements AutoCloseable {
         if (this.strict) {
             requireUniformSources(token, layout);
         }
-        for (Block block : this.blocks) {
-            if (block.token.equals(token)) {
-                if (block.size != size
-                        || !block.layout.equals(layout)
-                        || !block.alphaTestReference.equals(alphaTestReference)) {
-                    throw new IllegalStateException(
-                            "Iris uniform token was registered with two different layouts or alpha-test references: "
-                                    + token
-                    );
-                }
-                return;
+        Block existing = this.blocksByToken.get(token);
+        if (existing != null) {
+            if (existing.size != size
+                    || !existing.layout.equals(layout)
+                    || !existing.alphaTestReference.equals(alphaTestReference)) {
+                throw new IllegalStateException(
+                        "Iris uniform token was registered with two different layouts or alpha-test references: "
+                                + token
+                );
             }
+            return;
         }
-        this.blocks.add(new Block(
+        Block block = new Block(
                 token,
                 label,
                 layout,
                 size,
                 alphaTestReference,
                 buildPlan(token, layout)
-        ));
+        );
+        this.blocks.add(block);
+        this.blocksByToken.put(token, block);
     }
 
     private ProgramPlan buildPlan(
@@ -488,12 +490,8 @@ final class IrisMetalUniformValues implements AutoCloseable {
         if (this.closed) {
             return null;
         }
-        for (Block block : this.blocks) {
-            if (block.token.equals(token) && block.buffer != null) {
-                return block.buffer.slice();
-            }
-        }
-        return null;
+        Block block = this.blocksByToken.get(token);
+        return block != null && block.buffer != null ? block.buffer.slice() : null;
     }
 
     /**
@@ -1013,12 +1011,7 @@ final class IrisMetalUniformValues implements AutoCloseable {
     }
 
     private @Nullable Block findBlock(final Object token) {
-        for (Block block : this.blocks) {
-            if (block.token.equals(token)) {
-                return block;
-            }
-        }
-        return null;
+        return this.blocksByToken.get(token);
     }
 
     /**
@@ -1365,6 +1358,7 @@ final class IrisMetalUniformValues implements AutoCloseable {
             }
         }
         this.blocks.clear();
+        this.blocksByToken.clear();
     }
 
     // ------------------------------------------------------------------

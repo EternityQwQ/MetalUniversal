@@ -44,6 +44,7 @@ final class MetalRenderPass implements RenderPassBackend {
     @Nullable
     private final String label;
     private final GpuTextureView[] colorTextures;
+    private final MTLPixelFormat[] colorAttachmentFormats;
     @Nullable
     private final GpuTextureView depthTexture;
     private final RenderPass.RenderArea renderArea;
@@ -93,6 +94,12 @@ final class MetalRenderPass implements RenderPassBackend {
                 ? label.get()
                 : null;
         this.colorTextures = colorTextures.clone();
+        this.colorAttachmentFormats = new MTLPixelFormat[this.colorTextures.length];
+        for (int index = 0; index < this.colorTextures.length; index++) {
+            this.colorAttachmentFormats[index] = this.colorTextures[index] == null
+                    ? MTLPixelFormat.Invalid
+                    : ((MetalGpuTexture) this.colorTextures[index].texture()).mtlPixelFormat();
+        }
         this.depthTexture = depthTexture;
         this.renderArea = renderArea;
         this.clearColors = clearColors == null ? null : clearColors.clone();
@@ -149,13 +156,12 @@ final class MetalRenderPass implements RenderPassBackend {
             vertexBuffersDirty = true;
             pipelineDirty = true;
         }
-        this.contractPipelineId = pipeline.getLocation().toString();
         if (contractPassToken >= 0L) {
             RenderContractRuntime.updatePipeline(contractPassToken, compiled.validationPipelineId());
             RenderContractRuntime.updateShaders(contractPassToken, compiled.validationShaderIds());
-        }
-        if (contractPassToken >= 0L) {
             this.contractPipelineId = compiled.validationPipelineId();
+        } else {
+            this.contractPipelineId = pipeline.getLocation().toString();
         }
     }
 
@@ -203,7 +209,7 @@ final class MetalRenderPass implements RenderPassBackend {
     }
 
     Map<String, TextureViewAndSampler> boundTextures() {
-        return Map.copyOf(this.samplers);
+        return this.samplers;
     }
 
     @Override
@@ -472,13 +478,7 @@ final class MetalRenderPass implements RenderPassBackend {
     }
 
     MTLPixelFormat[] colorAttachmentFormats() {
-        MTLPixelFormat[] formats = new MTLPixelFormat[colorTextures.length];
-        for (int index = 0; index < colorTextures.length; index++) {
-            formats[index] = colorTextures[index] == null
-                    ? MTLPixelFormat.Invalid
-                    : ((MetalGpuTexture) colorTextures[index].texture()).mtlPixelFormat();
-        }
-        return formats;
+        return this.colorAttachmentFormats;
     }
 
     MTLPixelFormat depthAttachmentFormat() {
