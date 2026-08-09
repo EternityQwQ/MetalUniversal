@@ -14,11 +14,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ForgeGradle 2.3 + Gradle 4.10.3 require JDK 8 strictly.
+      # ForgeGradle 2.3 + Gradle 4.10.3 require JDK 8 strictly. Temurin no
+      # longer publishes JDK 8 for macOS, so use Azul Zulu (still ships 8).
       - name: Set up JDK 8
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
+          distribution: zulu
           java-version: '8'
 
       - name: Cache Gradle
