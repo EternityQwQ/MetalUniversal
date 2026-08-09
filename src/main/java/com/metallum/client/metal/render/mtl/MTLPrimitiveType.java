@@ -1,9 +1,5 @@
 package com.metallum.client.metal.render.mtl;
 
-import net.fabricmc.api.EnvType;
-import net.fabricmc.api.Environment;
-
-@Environment(EnvType.CLIENT)
 public enum MTLPrimitiveType {
     Point(0L),
     Line(1L),
@@ -14,18 +10,7 @@ public enum MTLPrimitiveType {
 
     public final long value;
 
-    MTLPrimitiveType(final long value) {
+    MTLPrimitiveType(long value) {
         this.value = value;
-    }
-
-    public static MTLPrimitiveType from(final com.mojang.blaze3d.PrimitiveTopology mode) {
-        return switch (mode) {
-            case TRIANGLES, QUADS, LINES -> Triangle;
-            case TRIANGLE_STRIP -> TriangleStrip;
-            case DEBUG_LINES -> Line;
-            case DEBUG_LINE_STRIP -> LineStrip;
-            case POINTS -> Point;
-            case TRIANGLE_FAN -> TriangleFan;
-        };
     }
 }

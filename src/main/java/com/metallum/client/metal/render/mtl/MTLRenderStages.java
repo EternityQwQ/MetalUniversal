@@ -1,20 +1,15 @@
 package com.metallum.client.metal.render.mtl;
 
-import net.fabricmc.api.EnvType;
-import net.fabricmc.api.Environment;
-
-@Environment(EnvType.CLIENT)
 public enum MTLRenderStages {
-    Vertex(1L),
-    Fragment(2L),
-    VertexAndFragment(3L),
-    Tile(4L),
-    Object(8L),
-    Mesh(16L);
+    Vertex(0L),
+    Fragment(1L),
+    Tile(2L),
+    Object(3L),
+    Mesh(4L);
 
     public final long value;
 
-    MTLRenderStages(final long value) {
+    MTLRenderStages(long value) {
         this.value = value;
     }
 }

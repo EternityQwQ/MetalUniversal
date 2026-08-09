@@ -1,0 +1,14 @@
+[
+  {
+    "modid": "metallum",
+    "name": "MetalUniversal",
+    "description": "Apple Metal rendering backend for Minecraft 1.12.2, ported from MetalUniversal. Routes OpenGL through Metal for native Apple Silicon rendering, with broad mod and OptiFine compatibility via a GL-over-Metal translation layer.",
+    "version": "${version}",
+    "mcversion": "${mcversion}",
+    "authorList": ["kokodio", "EternityQwQ", "yitenchen123", "linfuhui272722"],
+    "credits": "Original Metallum/MetalUniversal Fabric implementation by kokodio, EternityQwQ, yitenchen123.",
+    "logoFile": "assets/metallum/icon.png",
+    "screenshots": [],
+    "dependencies": []
+  }
+]

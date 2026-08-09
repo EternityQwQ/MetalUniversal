@@ -1,14 +1,16 @@
 package com.metallum.client.metal.render.mtl;
 
-import net.fabricmc.api.EnvType;
-import net.fabricmc.api.Environment;
+public enum MTLResourceOptions {
+    ResourceStorageModeShared(0L),
+    ResourceStorageModeManaged(1L << 8),
+    ResourceStorageModePrivate(2L << 8),
+    ResourceStorageModeMemoryless(3L << 8),
+    ResourceCPUCacheModeDefault(0L),
+    ResourceCPUCacheModeWriteCombined(1L << 4);
 
-@Environment(EnvType.CLIENT)
-public final class MTLResourceOptions {
-    private MTLResourceOptions() {
-    }
+    public final long value;
 
-    public static long of(final MTLStorageMode storageMode, final MTLHazardTrackingMode hazardTrackingMode) {
-        return (storageMode.value << 4) | (hazardTrackingMode.value << 8);
+    MTLResourceOptions(long value) {
+        this.value = value;
     }
 }

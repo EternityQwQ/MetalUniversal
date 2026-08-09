@@ -1,9 +1,5 @@
 package com.metallum.client.metal.render.mtl;
 
-import net.fabricmc.api.EnvType;
-import net.fabricmc.api.Environment;
-
-@Environment(EnvType.CLIENT)
 public enum MTLStorageMode {
     Shared(0L),
     Managed(1L),
@@ -12,7 +8,7 @@ public enum MTLStorageMode {
 
     public final long value;
 
-    MTLStorageMode(final long value) {
+    MTLStorageMode(long value) {
         this.value = value;
     }
 }

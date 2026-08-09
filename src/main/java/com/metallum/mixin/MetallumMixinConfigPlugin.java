@@ -1,39 +1,30 @@
 package com.metallum.mixin;
 
-import net.fabricmc.loader.api.FabricLoader;
+import com.metallum.Metallum;
+import com.metallum.client.metal.MetalRuntime;
 import org.objectweb.asm.tree.ClassNode;
 import org.spongepowered.asm.mixin.extensibility.IMixinConfigPlugin;
 import org.spongepowered.asm.mixin.extensibility.IMixinInfo;
 
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 
+/**
+ * Mixin config plugin for Metallum.
+ *
+ * <p>Controls which mixins apply based on the runtime environment:
+ * <ul>
+ *   <li>The Metal backend mixins only apply when a Metal device is available
+ *       (macOS / Apple Silicon). On non-Metal platforms every mixin is refused
+ *       so the mod is a no-op and the vanilla OpenGL path is untouched.</li>
+ *   <li>The OptiFine compatibility mixin only applies when OptiFine is detected
+ *       on the classpath, so it does not alter vanilla behaviour.</li>
+ * </ul>
+ */
 public final class MetallumMixinConfigPlugin implements IMixinConfigPlugin {
-    private static final String PREFERRED_GRAPHICS_API_MIXIN = "com.metallum.mixin.render.PreferredGraphicsApiMixin";
-    private static final String BACKEND_FRAME_COMPARISON_MIXIN =
-            "com.metallum.mixin.render.BackendFrameComparisonMixin";
-    private static final String BACKEND_FRAME_COMPARISON_GAME_RENDERER_MIXIN =
-            "com.metallum.mixin.render.BackendFrameComparisonGameRendererMixin";
-    private static final String BACKEND_FRAME_COMPARISON_SERVER_MIXIN =
-            "com.metallum.mixin.render.BackendFrameComparisonServerMixin";
-    private static final String BACKEND_FRAME_COMPARISON_DELTA_TRACKER_MIXIN =
-            "com.metallum.mixin.render.BackendFrameComparisonDeltaTrackerMixin";
-    private static final String PREFERRED_GRAPHICS_BACKEND_OPTION = "preferredGraphicsBackend";
-    private static final String DEFAULT_GRAPHICS_BACKEND = "\"default\"";
-
-    private boolean isMacOs;
-    private boolean isDefaultGraphicsApi;
-
     @Override
     public void onLoad(String mixinPackage) {
-        String osName = System.getProperty("os.name", "");
-        this.isMacOs = osName.toLowerCase(Locale.ROOT).contains("mac");
-        this.isDefaultGraphicsApi = Boolean.getBoolean("metallum.validation.forceMetal")
-                || isDefaultGraphicsApiSelected();
+        // no-op
     }
 
     @Override
@@ -43,30 +34,22 @@ public final class MetallumMixinConfigPlugin implements IMixinConfigPlugin {
 
     @Override
     public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
-        if (!this.isMacOs) {
+        // Metal-routing mixins require a Metal device; otherwise skip entirely.
+        if (!MetalRuntime.isMetalPlatform()) {
+            if (mixinClassName.contains("OptiFineCompatMixin")) {
+                return false;
+            }
             return false;
         }
-        if (BACKEND_FRAME_COMPARISON_MIXIN.equals(mixinClassName)
-                || BACKEND_FRAME_COMPARISON_GAME_RENDERER_MIXIN.equals(mixinClassName)
-                || BACKEND_FRAME_COMPARISON_SERVER_MIXIN.equals(mixinClassName)
-                || BACKEND_FRAME_COMPARISON_DELTA_TRACKER_MIXIN.equals(mixinClassName)) {
-            return Boolean.getBoolean("metallum.backend.compare.enabled");
+        if (mixinClassName.contains("OptiFineCompatMixin")) {
+            return MetalRuntime.isOptiFinePresent();
         }
-        if (mixinClassName.contains(".mixin.sodium.")) {
-            return FabricLoader.getInstance().isModLoaded("sodium");
-        }
-        if (mixinClassName.contains(".mixin.iris.")) {
-            // Iris-dormancy compat shims: only meaningful when Iris is present
-            // and the default (Metal-first) backend selection is active. The
-            // injected handlers additionally check the LIVE backend at runtime
-            // so a Vulkan/GL fallback leaves Iris untouched.
-            return FabricLoader.getInstance().isModLoaded("iris") && this.isDefaultGraphicsApi;
-        }
-        return PREFERRED_GRAPHICS_API_MIXIN.equals(mixinClassName) || this.isDefaultGraphicsApi;
+        return true;
     }
 
     @Override
     public void acceptTargets(Set<String> myTargets, Set<String> otherTargets) {
+        // no-op
     }
 
     @Override
@@ -75,29 +58,12 @@ public final class MetallumMixinConfigPlugin implements IMixinConfigPlugin {
     }
 
     @Override
-    public void preApply(String targetClassName, ClassNode targetClass, String mixinClassName, IMixinInfo mixinInfo) {
+    public void preApply(String targetClassName, ClassNode targetClassNode, String mixinClassName, IMixinInfo mixinInfo) {
+        // no-op
     }
 
     @Override
-    public void postApply(String targetClassName, ClassNode targetClass, String mixinClassName, IMixinInfo mixinInfo) {
-    }
-
-    private static boolean isDefaultGraphicsApiSelected() {
-        Path optionsFile = FabricLoader.getInstance().getGameDir().resolve("options.txt");
-        try {
-            for (String line : Files.readAllLines(optionsFile)) {
-                int separator = line.indexOf(':');
-                if (separator <= 0) {
-                    continue;
-                }
-                if (PREFERRED_GRAPHICS_BACKEND_OPTION.equals(line.substring(0, separator))) {
-                    String value = line.substring(separator + 1).toLowerCase(Locale.ROOT);
-                    return DEFAULT_GRAPHICS_BACKEND.equals(value);
-                }
-            }
-        } catch (IOException ignored) {
-        }
-
-        return true;
+    public void postApply(String targetClassName, ClassNode targetClassNode, String mixinClassName, IMixinInfo mixinInfo) {
+        // no-op
     }
 }

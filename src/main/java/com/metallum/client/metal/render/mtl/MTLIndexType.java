@@ -1,23 +1,22 @@
 package com.metallum.client.metal.render.mtl;
 
-import com.mojang.blaze3d.IndexType;
-import net.fabricmc.api.EnvType;
-import net.fabricmc.api.Environment;
-
-@Environment(EnvType.CLIENT)
 public enum MTLIndexType {
-    UInt16(0L, 2),
-    UInt32(1L, 4);
+    UInt16(0L),
+    UInt32(1L);
 
     public final long value;
-    public final int bytes;
 
-    MTLIndexType(final long value, final int bytes) {
+    MTLIndexType(long value) {
         this.value = value;
-        this.bytes = bytes;
     }
 
-    public static MTLIndexType from(final IndexType indexType) {
-        return indexType == IndexType.INT ? UInt32 : UInt16;
+    public static MTLIndexType fromIndexByteSize(int bytes) {
+        if (bytes == 2) {
+            return UInt16;
+        }
+        if (bytes == 4) {
+            return UInt32;
+        }
+        throw new IllegalArgumentException("Unsupported index element size: " + bytes);
     }
 }

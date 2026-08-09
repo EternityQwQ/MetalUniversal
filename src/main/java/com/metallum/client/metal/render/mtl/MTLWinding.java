@@ -1,16 +1,12 @@
 package com.metallum.client.metal.render.mtl;
 
-import net.fabricmc.api.EnvType;
-import net.fabricmc.api.Environment;
-
-@Environment(EnvType.CLIENT)
 public enum MTLWinding {
-    Clockwise(0),
-    CounterClockwise(1);
+    Clockwise(0L),
+    CounterClockwise(1L);
 
-    public final int value;
+    public final long value;
 
-    MTLWinding(final int value) {
+    MTLWinding(long value) {
         this.value = value;
     }
 }

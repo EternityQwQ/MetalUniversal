@@ -1,9 +1,5 @@
 package com.metallum.client.metal.render.mtl;
 
-import net.fabricmc.api.EnvType;
-import net.fabricmc.api.Environment;
-
-@Environment(EnvType.CLIENT)
 public enum MTLBlendOperation {
     Add(0L),
     Subtract(1L),
@@ -13,17 +9,7 @@ public enum MTLBlendOperation {
 
     public final long value;
 
-    MTLBlendOperation(final long value) {
+    MTLBlendOperation(long value) {
         this.value = value;
-    }
-
-    public static MTLBlendOperation from(final com.mojang.blaze3d.platform.BlendOp op) {
-        return switch (op) {
-            case ADD -> Add;
-            case SUBTRACT -> Subtract;
-            case REVERSE_SUBTRACT -> ReverseSubtract;
-            case MIN -> Min;
-            case MAX -> Max;
-        };
     }
 }

@@ -1,33 +1,52 @@
 package com.metallum;
 
-import com.metallum.client.metal.render.bridge.MetalNativeBridge;
-import net.fabricmc.api.ModInitializer;
-import net.fabricmc.loader.api.entrypoint.PreLaunchEntrypoint;
+import com.metallum.client.metal.MetalRuntime;
+import com.metallum.client.metal.MetalConfig;
+import net.minecraftforge.fml.common.Mod;
+import net.minecraftforge.fml.common.event.FMLInitializationEvent;
+import net.minecraftforge.fml.common.event.FMLPreInitializationEvent;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-public class Metallum implements ModInitializer, PreLaunchEntrypoint {
+/**
+ * MetalUniversal for Minecraft 1.12.2 Forge.
+ *
+ * <p>This is a port of the MetalUniversal Fabric mod (which targets modern
+ * Minecraft 26.2 with a pluggable GpuBackend abstraction). 1.12.2 has no such
+ * abstraction: OpenGL is hardcoded throughout {@code GlStateManager},
+ * {@code Tessellator}, {@code EntityRenderer} and every mod's render path.
+ *
+ * <p>Instead of reimplementing every renderer, Metallum installs a
+ * <em>GL-over-Metal translation layer</em>: OpenGL state and draw calls captured
+ * at the {@code GlStateManager}/{@code GL11} boundary are translated into Metal
+ * command encoders and submitted to a Metal device. Because OptiFine and the
+ * vast majority of mods ultimately issue OpenGL calls through the same path,
+ * translating at that boundary gives broad compatibility without requiring each
+ * mod to opt in.</p>
+ *
+ * <p>The native Metal bindings (the {@code mtl} and {@code bridge} packages)
+ * are ported from the original Java 25 Foreign Function &amp; Memory API
+ * implementation to Java 8 JNI. The Swift native library is reused verbatim:
+ * it speaks the Apple Metal API, which is version-independent of Minecraft.</p>
+ */
+@Mod(modid = Metallum.MOD_ID, name = "MetalUniversal", version = "${mod_version}", clientSideOnly = true, acceptedMinecraftVersions = "[1.12.2]")
+public final class Metallum {
     public static final String MOD_ID = "metallum";
+    public static final String NAME = "MetalUniversal";
+    public static final Logger LOGGER = LogManager.getLogger(MOD_ID);
 
-    // This logger is used to write text to the console and the log file.
-    // It is considered best practice to use your mod id as the logger's name.
-    // That way, it's clear which mod wrote info, warnings, and errors.
-    public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
+    @Mod.Instance(MOD_ID)
+    public static Metallum instance;
 
-    @Override
-    public void onPreLaunch() {
-        // PreLaunch 是 Fabric Loader 提供的最早入口点，在游戏启动之前调用，
-        // 早于任何 Minecraft 类（包括 VulkanBackend、GlBackend、MetalBackend）被加载。
-        // 必须在这里设置 Configuration.SPVC_LIBRARY_NAME，因为 LWJGL 的 Spvc.SPVC 是
-        // static final 字段，类初始化时一次性读取配置并缓存，之后修改无效。
-        // 如果等到 onInitialize 或 MetalBackend.createDevice，Spvc 类可能已被
-        // VulkanBackend 的类加载触发初始化，配置就来不及了。
-        // 非 iOS 环境下此方法立即返回（isIOS() 检查）。
-        MetalNativeBridge.ensureSpvcLibraryConfigured();
+    @Mod.EventHandler
+    public void preInit(FMLPreInitializationEvent event) {
+        MetalConfig.load(event.getSuggestedConfigurationFile());
+        MetalRuntime.bootstrap();
     }
 
-    @Override
-    public void onInitialize() {
+    @Mod.EventHandler
+    public void init(FMLInitializationEvent event) {
+        Metallum.LOGGER.info("MetalUniversal 1.12.2 port initialized. Backend: {}",
+                MetalRuntime.isActivated() ? "Metal (GL-over-Metal translation)" : "OpenGL (Metal unavailable, passthrough)");
     }
 }

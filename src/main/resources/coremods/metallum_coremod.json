@@ -1,0 +1,5 @@
+{
+  "coremod": "com.metallum.coremod.MetallumCoremod",
+  "name": "MetalUniversal Mixin Bootstrap",
+  "containsMixins": true
+}

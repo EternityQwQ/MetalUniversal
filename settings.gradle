@@ -1,13 +1,1 @@
-pluginManagement {
-	repositories {
-		maven {
-			name = 'Fabric'
-			url = 'https://maven.fabricmc.net/'
-		}
-		mavenCentral()
-		gradlePluginPortal()
-	}
-}
-
-// Should match your modid
-rootProject.name = 'metallum'
+rootProject.name = 'MetalUniversal-1.12.2'
