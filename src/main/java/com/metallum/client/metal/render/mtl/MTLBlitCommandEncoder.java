@@ -43,27 +43,6 @@ public final class MTLBlitCommandEncoder extends MTLCommandEncoder {
         );
     }
 
-    public void copyFromBufferToTextureVolume(
-            final MemorySegment sourceBuffer,
-            final long sourceOffset,
-            final MemorySegment texture,
-            final long mipLevel,
-            final long slice,
-            final long x,
-            final long y,
-            final long z,
-            final long width,
-            final long height,
-            final long depth,
-            final long bytesPerRow,
-            final long bytesPerImage
-    ) {
-        MetalNativeBridge.MTLBlitCommandEncoder_copyFromBufferToTextureV2(
-                handle(), sourceBuffer, sourceOffset, texture, mipLevel, slice,
-                x, y, z, width, height, depth, bytesPerRow, bytesPerImage
-        );
-    }
-
     public void copyFromTextureToTexture(
             final MemorySegment sourceTexture,
             final MemorySegment destinationTexture,
@@ -96,31 +75,6 @@ public final class MTLBlitCommandEncoder extends MTLCommandEncoder {
         MetalNativeBridge.MTLBlitCommandEncoder_copyFromTextureToBuffer(
                 handle(), sourceTexture, destinationBuffer, destinationOffset, mipLevel, slice, x, y, width, height, bytesPerRow, bytesPerImage
         );
-    }
-
-    public void copyFromTextureToBufferVolume(
-            final MemorySegment sourceTexture,
-            final MemorySegment destinationBuffer,
-            final long destinationOffset,
-            final long mipLevel,
-            final long slice,
-            final long x,
-            final long y,
-            final long z,
-            final long width,
-            final long height,
-            final long depth,
-            final long bytesPerRow,
-            final long bytesPerImage
-    ) {
-        MetalNativeBridge.MTLBlitCommandEncoder_copyFromTextureToBufferV2(
-                handle(), sourceTexture, destinationBuffer, destinationOffset, mipLevel, slice,
-                x, y, z, width, height, depth, bytesPerRow, bytesPerImage
-        );
-    }
-
-    public void generateMipmaps(final MemorySegment texture) {
-        MetalNativeBridge.MTLBlitCommandEncoder_generateMipmaps(handle(), texture);
     }
 
     public void updateFence(final MemorySegment fence) {

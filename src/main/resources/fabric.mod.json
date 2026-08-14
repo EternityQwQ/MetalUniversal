@@ -23,12 +23,6 @@
     ],
     "main": [
       "com.metallum.Metallum"
-    ],
-    "client": [
-      "com.metallum.client.validation.MetalValidationClient"
-    ],
-    "sodium:config_api_user": [
-      "com.metallum.client.metal.render.MetalFxSodiumConfig"
     ]
   },
   "mixins": [

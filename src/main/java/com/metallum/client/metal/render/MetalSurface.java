@@ -34,16 +34,11 @@ final class MetalSurface implements GpuSurfaceBackend {
             throw new SurfaceException("Metal surface configuration must be positive, got " + config.width() + "x" + config.height());
         }
 
-        boolean immediate = config.presentMode() == GpuSurface.PresentMode.MAILBOX;
-        // Frame generation presents from CAMetalDisplayLink and is only valid
-        // with vsync on. Publish the mode before the layer is reconfigured so
-        // the presenter is already gated off when displaySyncEnabled drops.
-        MetalFxManager.observePresentMode(immediate);
         MetalNativeBridge.metallum_configure_layer(
                 this.metalLayer,
                 config.width(),
                 config.height(),
-                immediate ? 1 : 0
+                config.presentMode() == GpuSurface.PresentMode.MAILBOX ? 1 : 0
         );
 
         this.configuration = config;

@@ -11,23 +11,12 @@ import java.lang.foreign.MemorySegment;
 
 @Environment(EnvType.CLIENT)
 final class MetalGpuTextureView extends GpuTextureView {
-    private final boolean alphaOneSwizzle;
     private boolean closed;
     @Nullable
     private MemorySegment nativeHandle;
 
     MetalGpuTextureView(final GpuTexture texture, final int baseMipLevel, final int mipLevels) {
-        this(texture, baseMipLevel, mipLevels, false);
-    }
-
-    MetalGpuTextureView(
-            final GpuTexture texture,
-            final int baseMipLevel,
-            final int mipLevels,
-            final boolean alphaOneSwizzle
-    ) {
         super(texture, baseMipLevel, mipLevels);
-        this.alphaOneSwizzle = alphaOneSwizzle;
         ((MetalGpuTexture) texture).addView();
     }
 
@@ -37,24 +26,18 @@ final class MetalGpuTextureView extends GpuTextureView {
         }
 
         MetalGpuTexture texture = (MetalGpuTexture) this.texture();
-        if (!this.alphaOneSwizzle
-                && this.baseMipLevel() == 0
-                && this.mipLevels() >= texture.getMipLevels()) {
+        if (this.baseMipLevel() == 0 && this.mipLevels() >= texture.getMipLevels()) {
             return texture.nativeHandle();
         }
         if (this.nativeHandle == null) {
-            MemorySegment viewHandle = this.alphaOneSwizzle
-                    ? MetalNativeBridge.metallum_create_texture_view_alpha_one(
-                            texture.nativeHandle(), this.baseMipLevel(), this.mipLevels()
-                    )
-                    : MetalNativeBridge.metallum_create_texture_view(
-                            texture.nativeHandle(), this.baseMipLevel(), this.mipLevels()
-                    );
+            MemorySegment viewHandle = MetalNativeBridge.metallum_create_texture_view(
+                    texture.nativeHandle(),
+                    this.baseMipLevel(),
+                    this.mipLevels()
+            );
             if (MetalNativeBridge.isNullHandle(viewHandle)) {
                 throw new IllegalStateException(
-                        "Failed to create Metal texture view for mip range "
-                                + this.baseMipLevel() + "+" + this.mipLevels()
-                                + (this.alphaOneSwizzle ? " with alpha=1 swizzle" : "")
+                        "Failed to create Metal texture view for mip range " + this.baseMipLevel() + "+" + this.mipLevels()
                 );
             }
             this.nativeHandle = viewHandle;

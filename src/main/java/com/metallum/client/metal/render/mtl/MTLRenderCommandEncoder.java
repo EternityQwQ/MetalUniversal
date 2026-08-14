@@ -106,16 +106,6 @@ public final class MTLRenderCommandEncoder extends MTLCommandEncoder {
         MetalNativeBridge.MTLRenderCommandEncoder_drawIndexedPrimitivesTriangleFan(handle(), indexBuffer, fanIndexBuffer, fanIndexBufferOffset, indexType, offset, indexCount, baseVertex, instanceCount, baseInstance);
     }
 
-    /**
-     * Resolves a depth attachment created with {@code storeAction = .unknown}.
-     * Must be called before {@code endEncoding()} on every encoder whose
-     * descriptor deferred the depth store decision, and must not be called on
-     * encoders whose descriptor set a concrete store action.
-     */
-    public void setDepthStoreAction(final boolean store) {
-        MetalNativeBridge.MTLRenderCommandEncoder_setDepthStoreAction(handle(), store ? 1 : 0);
-    }
-
     public void updateFence(final MemorySegment fence, final MTLRenderStages stages) {
         MetalNativeBridge.MTLRenderCommandEncoder_updateFence(handle(), fence, stages.value);
     }

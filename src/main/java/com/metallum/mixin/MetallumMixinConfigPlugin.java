@@ -14,14 +14,6 @@ import java.util.Set;
 
 public final class MetallumMixinConfigPlugin implements IMixinConfigPlugin {
     private static final String PREFERRED_GRAPHICS_API_MIXIN = "com.metallum.mixin.render.PreferredGraphicsApiMixin";
-    private static final String BACKEND_FRAME_COMPARISON_MIXIN =
-            "com.metallum.mixin.render.BackendFrameComparisonMixin";
-    private static final String BACKEND_FRAME_COMPARISON_GAME_RENDERER_MIXIN =
-            "com.metallum.mixin.render.BackendFrameComparisonGameRendererMixin";
-    private static final String BACKEND_FRAME_COMPARISON_SERVER_MIXIN =
-            "com.metallum.mixin.render.BackendFrameComparisonServerMixin";
-    private static final String BACKEND_FRAME_COMPARISON_DELTA_TRACKER_MIXIN =
-            "com.metallum.mixin.render.BackendFrameComparisonDeltaTrackerMixin";
     private static final String PREFERRED_GRAPHICS_BACKEND_OPTION = "preferredGraphicsBackend";
     private static final String DEFAULT_GRAPHICS_BACKEND = "\"default\"";
 
@@ -32,8 +24,7 @@ public final class MetallumMixinConfigPlugin implements IMixinConfigPlugin {
     public void onLoad(String mixinPackage) {
         String osName = System.getProperty("os.name", "");
         this.isMacOs = osName.toLowerCase(Locale.ROOT).contains("mac");
-        this.isDefaultGraphicsApi = Boolean.getBoolean("metallum.validation.forceMetal")
-                || isDefaultGraphicsApiSelected();
+        this.isDefaultGraphicsApi = isDefaultGraphicsApiSelected();
     }
 
     @Override
@@ -46,21 +37,8 @@ public final class MetallumMixinConfigPlugin implements IMixinConfigPlugin {
         if (!this.isMacOs) {
             return false;
         }
-        if (BACKEND_FRAME_COMPARISON_MIXIN.equals(mixinClassName)
-                || BACKEND_FRAME_COMPARISON_GAME_RENDERER_MIXIN.equals(mixinClassName)
-                || BACKEND_FRAME_COMPARISON_SERVER_MIXIN.equals(mixinClassName)
-                || BACKEND_FRAME_COMPARISON_DELTA_TRACKER_MIXIN.equals(mixinClassName)) {
-            return Boolean.getBoolean("metallum.backend.compare.enabled");
-        }
         if (mixinClassName.contains(".mixin.sodium.")) {
             return FabricLoader.getInstance().isModLoaded("sodium");
-        }
-        if (mixinClassName.contains(".mixin.iris.")) {
-            // Iris-dormancy compat shims: only meaningful when Iris is present
-            // and the default (Metal-first) backend selection is active. The
-            // injected handlers additionally check the LIVE backend at runtime
-            // so a Vulkan/GL fallback leaves Iris untouched.
-            return FabricLoader.getInstance().isModLoaded("iris") && this.isDefaultGraphicsApi;
         }
         return PREFERRED_GRAPHICS_API_MIXIN.equals(mixinClassName) || this.isDefaultGraphicsApi;
     }

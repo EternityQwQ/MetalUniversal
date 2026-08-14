@@ -23,18 +23,6 @@ public final class MTLCommandQueue {
         return new MTLCommandQueue(handle);
     }
 
-    /**
-     * Creates the native residency set and attaches it to this queue (migration
-     * spec M3). Must run before any resource is created: allocations made earlier
-     * are never added to the set, which is harmless under Metal 3 (residency is
-     * automatic) but not once the queue is Metal 4.
-     *
-     * @return true when the set is active
-     */
-    public boolean enableResidencySet(final MemorySegment device) {
-        return MetalNativeBridge.metallum_residency_set_enable(device, handle) != 0;
-    }
-
     public MTLCommandBuffer makeCommandBuffer(@Nullable final String label) {
         MemorySegment commandBuffer = MetalNativeBridge.MTLCommandQueue_makeCommandBuffer(handle, label);
         if (MetalNativeBridge.isNullHandle(commandBuffer)) {
