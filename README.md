@@ -68,8 +68,8 @@ MetalUniversal 是一个基于 Apple Metal API 的 Minecraft 渲染后端模组�
 
 | 平台 | 系统版本 | 芯片要求 |
 |------|---------|---------|
-| macOS | 14.0+ | Apple GPU family 9+（M3 及以上） |
-| iOS | 17.0+ | Apple GPU family 9+（A17 Pro 及以上） |
+| macOS | 26.0+ | Apple GPU family 9+（M3 及以上） |
+| iOS | 26.0+ | Apple GPU family 9+（A17 Pro 及以上） |
 
 > ⚠️ **关于不支持硬件帧插值的设备**：M1 / M2 / A14–A16 等芯片不具备 Apple GPU family 9 的硬件光流加速单元，本模组在这些设备上**不会启用**帧插值。早期版本曾使用 50/50 混合作为回退，但该方案在快速移动的第一人称视角下会产生严重拖影，效果反而不如关闭，已在当前版本移除。
 
