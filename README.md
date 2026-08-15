@@ -28,13 +28,12 @@ MetalUniversal 是一个基于 Apple Metal API 的 Minecraft 渲染后端模组�
 | Fabric Loader | >= 0.19.2 | **必需** — 模组加载器 |
 | Minecraft | 26.2 | **必需** — 目标游戏版本 |
 | Java | >= 25 | **必需** — 运行时环境 |
-| Sodium | mc26.2-0.9.0-fabric | **可选，强烈推荐** — 提供完整的视频设置界面适配 |
+| Sodium | mc26.2-0.9.1-fabric | **必需** — 提供完整的视频设置界面适配 |
 
 > ### 关于 Sodium
 >
 > 安装 Sodium 后，MetalFX 设置会作为**独立页面**自动集成到 Sodium 的视频设置界面中（与 Iris 的 "Shader Packs" 页面注册方式一致），由 Sodium 官方 `ConfigEntryPoint` API 提供稳定的 UI 集成，自动获得与 Sodium 原生选项一致的渲染、搜索索引和 tab 排序行为。
 >
-> **未安装 Sodium 时**，MetalFX 设置入口仍可通过原版视频设置界面右上角的 "MetalFX 设置..." 按钮或全局快捷键 `F8` 打开，功能完全不受影响。
 
 ## MetalFX 超分辨率与帧插值
 
