@@ -77,8 +77,7 @@ MetalUniversal 是一个基于 Apple Metal API 的 Minecraft 渲染后端模组�
 ### 使用方法
 
 1. 启动 Minecraft，进入 **视频设置**
-   - **安装了 Sodium**：在 Sodium 视频设置左侧 mod 列表中点击 **MetalUniversal** 图标，即可进入 MetalFX 设置页面（与 Iris "Shader Packs" 入口位置一致）
-   - **未安装 Sodium**：点击原版视频设置界面右上角的 **"MetalFX 设置..."** 按钮，或随时按 `F8` 快捷键打开
+   - **安装了 Sodium**：在 Sodium 视频设置左侧 mod 列表中点击 **MetalUniversal** 图标，即可进入 MetalFX 设置页面（与 Iris "Shader Packs" 入口位置一致）,或随时按 `F8` 快捷键打开
 2. 首次进入会弹出**适配警告界面**，列出上述官方系统与芯片要求，请确认您的设备满足条件
 3. 点击 **"开启 MetalFX"** 进入设置界面（点击 "不开启" 则返回，下次进入仍会提示）
 4. 在设置界面选择空间超分模式、时间超分模式与帧插值模式，点击 **"完成"** 保存
@@ -132,7 +131,7 @@ GitHub Actions 工作流（`.github/workflows/build.yml`）在 `macos-15` 上构
 ## iOS 使用说明
 
 1. 在IOS系统上安装Minecraft Java Edition启动器
-2. 将 Metallum jar 放入 Minecraft 实例的 `mods/` 目录
+2. 将 Metallum jar 和 sodium 0.9.1 jar 放入 Minecraft 实例的 `mods/` 目录
 3. 启动 Minecraft，在视频设置中将图形后端选择为 "Prefer Metal"重启游戏即可生效
 ### 注意事项
 
@@ -142,7 +141,7 @@ GitHub Actions 工作流（`.github/workflows/build.yml`）在 `macos-15` 上构
 
 ## macOS 使用说明
 
-1. 下载最新 Metallum jar 并放入 `mods/` 目录
+1. 下载最新 Metallum jar 和 sodium 0.9.1 jar 并放入 `mods/` 目录
 2. 启动 Minecraft，在视频设置中将图形后端选择为 "Prefer Metal"重启游戏即可生效
 
 
