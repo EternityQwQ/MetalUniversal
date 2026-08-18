@@ -1,6 +1,5 @@
 package com.metallum.client.metal.render.mtl;
 
-import com.mojang.blaze3d.pipeline.ColorTargetState;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 
@@ -19,12 +18,12 @@ public enum MTLColorWriteMask {
         this.value = value;
     }
 
-    public static long from(@ColorTargetState.WriteMask final int blazeMask) {
+    // 1.21.11 无 ColorTargetState.WriteMask：RenderPipeline 仅暴露 writeColor/writeAlpha
+    // 布尔，Metal 着色器输出按分量写入（RGBA 全部或按布尔拆）
+    public static long from(final boolean writeColor, final boolean writeAlpha) {
         long mask = 0L;
-        if ((blazeMask & ColorTargetState.WRITE_RED) != 0) mask |= Red.value;
-        if ((blazeMask & ColorTargetState.WRITE_GREEN) != 0) mask |= Green.value;
-        if ((blazeMask & ColorTargetState.WRITE_BLUE) != 0) mask |= Blue.value;
-        if ((blazeMask & ColorTargetState.WRITE_ALPHA) != 0) mask |= Alpha.value;
+        if (writeColor) mask |= Red.value | Green.value | Blue.value;
+        if (writeAlpha) mask |= Alpha.value;
         return mask;
     }
 }

@@ -66,53 +66,72 @@ public enum MTLVertexFormat {
         this.value = value;
     }
 
-    public static MTLVertexFormat from(final com.mojang.blaze3d.GpuFormat format) {
-        return switch (format) {
-            case R32_FLOAT -> Float;
-            case RG32_FLOAT -> Float2;
-            case RGB32_FLOAT -> Float3;
-            case RGBA32_FLOAT -> Float4;
-            case RGBA8_UNORM -> UChar4Normalized;
-            case RGBA8_UINT -> UChar4;
-            case RG16_UINT -> UShort2;
-            case RG16_UNORM -> UShort2Normalized;
-            case RG16_SINT -> Short2;
-            case RG16_SNORM -> Short2Normalized;
-            case RGBA16_UINT -> UShort4;
-            case RGBA16_SINT -> Short4;
-            case RGBA16_UNORM -> UShort4Normalized;
-            case RGBA16_SNORM -> Short4Normalized;
-            case R32_UINT -> UInt;
-            case RG32_UINT -> UInt2;
-            case RGB32_UINT -> UInt3;
-            case RGBA32_UINT -> UInt4;
-            case R32_SINT -> Int;
-            case RG32_SINT -> Int2;
-            case RGB32_SINT -> Int3;
-            case RGBA32_SINT -> Int4;
-            case R16_FLOAT -> Half;
-            case R16_UINT -> UShort;
-            case R16_SINT -> Short;
-            case R16_UNORM -> UShortNormalized;
-            case R16_SNORM -> ShortNormalized;
-            case R8_UINT -> UChar;
-            case R8_SINT -> Char;
-            case R8_UNORM -> UCharNormalized;
-            case R8_SNORM -> CharNormalized;
-            case RG16_FLOAT -> Half2;
-            case RGBA16_FLOAT -> Half4;
-            case RGBA8_SNORM -> Char4Normalized;
-            case RGBA8_SINT -> Char4;
-            case RGB8_UNORM -> UChar3Normalized;
-            case RGB8_SNORM -> Char3Normalized;
-            case RGB8_UINT -> UChar3;
-            case RGB8_SINT -> Char3;
-            case RGB16_UINT -> UShort3;
-            case RGB16_SINT -> Short3;
-            case RGB16_UNORM -> UShort3Normalized;
-            case RGB16_SNORM -> Short3Normalized;
-            case RGB16_FLOAT -> Half3;
-            default -> Invalid;
+    public static MTLVertexFormat from(final com.mojang.blaze3d.vertex.VertexFormatElement.Type type, final int count) {
+        return fromImpl(type, count, true);
+    }
+
+    /**
+     * 整型语义 attribute（shader 声明 ivec/uvec，如 1.21.11 的 rendertype_text.vsh 中
+     * `in ivec2 UV2`）：descriptor 必须用非 normalized 格式，否则 Metal 报
+     * "Cannot convert attribute from MTLAttributeFormat*Normalized to int2 or uint2"
+     * （normalized 格式只允许转 float；GL 后端无此限制，Metal 严格匹配）。
+     */
+    public static MTLVertexFormat fromInteger(final com.mojang.blaze3d.vertex.VertexFormatElement.Type type, final int count) {
+        return fromImpl(type, count, false);
+    }
+
+    private static MTLVertexFormat fromImpl(final com.mojang.blaze3d.vertex.VertexFormatElement.Type type, final int count, final boolean normalized) {
+        // 1.21.11 无 GpuFormat：顶点格式由 VertexFormatElement.Type + 分量数推导
+        return switch (type) {
+            case FLOAT -> switch (count) {
+                case 1 -> Float;
+                case 2 -> Float2;
+                case 3 -> Float3;
+                case 4 -> Float4;
+                default -> Invalid;
+            };
+            case UBYTE -> switch (count) {
+                case 1 -> normalized ? UCharNormalized : UChar;
+                case 2 -> normalized ? UChar2Normalized : UChar2;
+                case 3 -> normalized ? UChar3Normalized : UChar3;
+                case 4 -> normalized ? UChar4Normalized : UChar4;
+                default -> Invalid;
+            };
+            case BYTE -> switch (count) {
+                case 1 -> normalized ? CharNormalized : Char;
+                case 2 -> normalized ? Char2Normalized : Char2;
+                case 3 -> normalized ? Char3Normalized : Char3;
+                case 4 -> normalized ? Char4Normalized : Char4;
+                default -> Invalid;
+            };
+            case USHORT -> switch (count) {
+                case 1 -> normalized ? UShortNormalized : UShort;
+                case 2 -> normalized ? UShort2Normalized : UShort2;
+                case 3 -> normalized ? UShort3Normalized : UShort3;
+                case 4 -> normalized ? UShort4Normalized : UShort4;
+                default -> Invalid;
+            };
+            case SHORT -> switch (count) {
+                case 1 -> normalized ? ShortNormalized : Short;
+                case 2 -> normalized ? Short2Normalized : Short2;
+                case 3 -> normalized ? Short3Normalized : Short3;
+                case 4 -> normalized ? Short4Normalized : Short4;
+                default -> Invalid;
+            };
+            case UINT -> switch (count) {
+                case 1 -> UInt;
+                case 2 -> UInt2;
+                case 3 -> UInt3;
+                case 4 -> UInt4;
+                default -> Invalid;
+            };
+            case INT -> switch (count) {
+                case 1 -> Int;
+                case 2 -> Int2;
+                case 3 -> Int3;
+                case 4 -> Int4;
+                default -> Invalid;
+            };
         };
     }
 }

@@ -289,7 +289,11 @@ private func buildPresentSampler(device: MTLDevice, filter: MTLSamplerMinMagFilt
     descriptor.mipFilter = .notMipmapped
     descriptor.sAddressMode = .clampToEdge
     descriptor.tAddressMode = .clampToEdge
-    return device.makeSamplerState(descriptor: descriptor)
+    if let state = device.makeSamplerState(descriptor: descriptor) {
+        return state
+    }
+    NSLog("[metallum] Failed to create present sampler (filter=%@)", filter == .linear ? "linear" : "nearest")
+    return nil
 }
 
 private func ensureClearColorDepthPipeline(_ device: MTLDevice, _ colorFormat: MTLPixelFormat, _ depthFormat: MTLPixelFormat, _ writeColor: Bool = true) -> MTLRenderPipelineState? {
@@ -523,6 +527,19 @@ public func metallum_NSWindow_backingScaleFactor(_ window: MetallumWindow) -> Do
     // UIWindow on iOS does not expose backingScaleFactor directly; the
     // on-screen scale is determined by the window's UIScreen.
     return Double(window.screen.scale)
+    #endif
+}
+
+// LWJGL 3.3.3（MC 1.21.11）的 GLFWNativeCocoa 无 glfwGetCocoaView（GLFW 3.5 API，
+// 26.2 的 LWJGL 3.4.1 才有）。macOS 上 GLFW 窗口的内容视图需经 NSWindow.contentView
+// 获取：swiftc 直出，避免 Java 侧依赖缺失的 GLFW 绑定。
+@_cdecl("metallum_NSWindow_contentView")
+public func metallum_NSWindow_contentView(_ window: MetallumWindow) -> UnsafeMutableRawPointer? {
+    #if os(macOS)
+    return unretainedPointer(window.contentView)
+    #elseif os(iOS)
+    // iOS 路径不使用（走 metallum_ios_find_surface_view）
+    return nil
     #endif
 }
 
@@ -1140,6 +1157,10 @@ public func metallum_MTLRenderCommandEncoder_setScissorRect(
 ) {
     encoder.setScissorRect(MTLScissorRect(x: Int(x), y: Int(y), width: Int(width), height: Int(height)))
 }
+
+// v11 诊断：Metal 侧 draw 命令确认（节流 5s，防 iOS 控制台刷屏）
+private var diagLastDrawLog: Double = -10
+private var diagDrawCount: UInt64 = 0
 
 @_cdecl("metallum_MTLRenderCommandEncoder_drawPrimitives")
 public func metallum_MTLRenderCommandEncoder_drawPrimitives(

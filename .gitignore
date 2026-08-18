@@ -41,3 +41,9 @@ replay_*.log
 /src/main/resources/natives/macos/*
 /src/main/resources/natives/ios/*
 libs/
+
+# local tooling
+
+.qartez/
+.cached-context/
+.factorypath

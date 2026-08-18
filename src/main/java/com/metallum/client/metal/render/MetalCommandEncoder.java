@@ -6,7 +6,10 @@ import com.metallum.client.metal.render.mtl.*;
 import com.mojang.blaze3d.buffers.GpuBuffer;
 import com.mojang.blaze3d.buffers.GpuBufferSlice;
 import com.mojang.blaze3d.buffers.GpuFence;
-import com.mojang.blaze3d.systems.*;
+import com.mojang.blaze3d.platform.NativeImage;
+import com.mojang.blaze3d.systems.CommandEncoder;
+import com.mojang.blaze3d.systems.GpuQuery;
+import com.mojang.blaze3d.systems.RenderPass;
 import com.mojang.blaze3d.textures.GpuTexture;
 import com.mojang.blaze3d.textures.GpuTextureView;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
@@ -16,6 +19,7 @@ import org.joml.Vector4f;
 import org.joml.Vector4fc;
 import org.jspecify.annotations.NonNull;
 import org.jspecify.annotations.Nullable;
+import org.lwjgl.system.MemoryUtil;
 
 import java.lang.foreign.MemorySegment;
 import java.nio.ByteBuffer;
@@ -24,16 +28,19 @@ import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalDouble;
+import java.util.OptionalInt;
+import java.util.OptionalLong;
+import java.util.function.Supplier;
 
 @Environment(EnvType.CLIENT)
-final class MetalCommandEncoder implements CommandEncoderBackend {
+final class MetalCommandEncoder implements CommandEncoder {
     public static final int MAX_SUBMITS_IN_FLIGHT = 3;
     private final MetalDevice device;
     private long currentSubmitIndex = MAX_SUBMITS_IN_FLIGHT;
     private final InFlight[] inFlight = new InFlight[MAX_SUBMITS_IN_FLIGHT];
     private final MemorySegment[] submitSemaphores = new MemorySegment[MAX_SUBMITS_IN_FLIGHT];
     private final MetalDestructionQueue destroyQueue = new MetalDestructionQueue(MAX_SUBMITS_IN_FLIGHT);
-    private final MetalTransientMemory transientMemory;
+    final MetalTransientMemory transientMemory;
     private final Map<MetalGpuTexture, Vector4fc> pendingColorClears = new IdentityHashMap<>();
     private final Map<MetalGpuTexture, Double> pendingDepthClears = new IdentityHashMap<>();
     private final MemorySegment fence;
@@ -47,6 +54,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
     private MemorySegment renderDepthAttachment = MemorySegment.NULL;
     private final Long2ObjectOpenHashMap<java.util.ArrayDeque<MemorySegment>> dynamicBackingPool = new Long2ObjectOpenHashMap<>();
     private static final int MAX_POOLED_DYNAMIC_BACKINGS_PER_SIZE = 8;
+    @Nullable
 
     MetalCommandEncoder(final MetalDevice device) {
         this.device = device;
@@ -84,6 +92,9 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         if (currentEncoder != null) {
             if (currentEncoder instanceof MTLRenderCommandEncoder renderEncoder) {
                 renderEncoder.updateFence(fence, MTLRenderStages.VertexAndFragment);
+                if (currentRenderPass != null) {
+                    currentRenderPass.invalidateEncoderState();
+                }
             } else if (currentEncoder instanceof MTLBlitCommandEncoder blitEncoder) {
                 blitEncoder.updateFence(fence);
             }
@@ -94,27 +105,24 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         renderDepthAttachment = MemorySegment.NULL;
     }
 
-    @Override
-    public @NonNull TransientMemory transientMemory() {
-        return transientMemory;
-    }
+    /**
+     * 1.21.11 的 CommandEncoder 无 submit() 接口方法：提交时机由 presentTexture
+     * （每帧末）与 waitForSubmittedGpuWork（资源释放前）驱动。
+     */
+    void submit() {
+        InFlight toClose = null;
+        if (commandBuffer != null) {
+            submitRenderPass();
+            endEncoder();
 
-    @Override
-    public void submit() {
-        if (commandBuffer == null) {
-            return;
+            int slot = (int) (currentSubmitIndex % MAX_SUBMITS_IN_FLIGHT);
+            MemorySegment completedSemaphore = submitSemaphores[slot];
+            commandBuffer.commitWithSignal(completedSemaphore);
+
+            toClose = inFlight[slot];
+            inFlight[slot] = new InFlight(currentSubmitIndex, commandBuffer, completedSemaphore);
+            commandBuffer = null;
         }
-
-        submitRenderPass();
-        endEncoder();
-
-        int slot = (int) (currentSubmitIndex % MAX_SUBMITS_IN_FLIGHT);
-        MemorySegment completedSemaphore = submitSemaphores[slot];
-        commandBuffer.commitWithSignal(completedSemaphore);
-
-        InFlight toClose = inFlight[slot];
-        inFlight[slot] = new InFlight(currentSubmitIndex, commandBuffer, completedSemaphore);
-        commandBuffer = null;
         currentSubmitIndex++;
 
         if (!awaitSubmitCompletion(currentSubmitIndex - MAX_SUBMITS_IN_FLIGHT, 5000L)) {
@@ -187,32 +195,52 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
     }
 
     @Override
-    public @NonNull RenderPassBackend createRenderPass(final RenderPassDescriptor descriptor) {
-        RenderPassDescriptor.Attachment<Optional<Vector4fc>> colorAttachment = descriptor.colorAttachments().getFirst();
-        GpuTextureView colorTexture = colorAttachment.textureView();
-        Optional<Vector4fc> colorClear = colorAttachment.clearValue();
+    public @NonNull RenderPass createRenderPass(
+            final @NonNull Supplier<String> debugGroup,
+            final @NonNull GpuTextureView colorTexture,
+            final @NonNull OptionalInt clearColor
+    ) {
+        return this.createRenderPass(debugGroup, colorTexture, clearColor, null, OptionalDouble.empty());
+    }
+
+    @Override
+    public @NonNull RenderPass createRenderPass(
+            final @NonNull Supplier<String> debugGroup,
+            final @NonNull GpuTextureView colorTexture,
+            final @NonNull OptionalInt clearColor,
+            @Nullable final GpuTextureView depthTexture,
+            final @NonNull OptionalDouble clearDepth
+    ) {
         MetalGpuTexture colorTex = (MetalGpuTexture) colorTexture.texture();
+        // 承接状态快照（pending 分支内会被 remove，先存）
+        boolean hadPendingColor = pendingColorClears.containsKey(colorTex);
+        boolean hadPendingDepth = depthTexture != null
+                && pendingDepthClears.containsKey(((MetalGpuTexture) depthTexture.texture()));
         Vector4fc pendingColor = pendingColorClears.get(colorTex);
-        if (pendingColor != null && isFullTextureView(colorTexture) && colorClear.isEmpty()) {
+        Vector4fc colorClear;
+        if (pendingColor != null && isFullTextureView(colorTexture) && clearColor.isEmpty()) {
+            // MC 1.21.11 的主目标清屏走 clearColorTexture()（pending 路径）而非 clearColor
+            // 参数：pending 必须承接为本 pass 的 clear（26.2 抄写时漏了 color 分支，
+            // 导致主目标 color 永不 clear → 未初始化纹理 → iOS 显示品红）
             pendingColorClears.remove(colorTex);
-            colorClear = Optional.of(pendingColor);
-        } else if (pendingColor != null && colorClear.isEmpty()) {
+            colorClear = pendingColor;
+        } else if (pendingColor != null && clearColor.isEmpty()) {
             flushPendingClear(colorTex);
+            colorClear = null;
         } else {
             pendingColorClears.remove(colorTex);
+            colorClear = clearColor.isPresent() ? fromArgbInt(clearColor.getAsInt()) : null;
         }
         colorTex.markContentsDirty();
 
-        RenderPassDescriptor.Attachment<OptionalDouble> depthAttachment = descriptor.depthAttachment();
-        GpuTextureView depthTexture = depthAttachment == null ? null : depthAttachment.textureView();
-        OptionalDouble depthClear = depthAttachment == null ? OptionalDouble.empty() : depthAttachment.clearValue();
-        if (depthAttachment != null) {
+        OptionalDouble effectiveDepthClear = clearDepth;
+        if (depthTexture != null) {
             MetalGpuTexture metalDepth = (MetalGpuTexture) depthTexture.texture();
             Double pendingDepth = pendingDepthClears.get(metalDepth);
-            if (pendingDepth != null && isFullTextureView(depthTexture) && depthClear.isEmpty()) {
+            if (pendingDepth != null && isFullTextureView(depthTexture) && effectiveDepthClear.isEmpty()) {
                 pendingDepthClears.remove(metalDepth);
-                depthClear = OptionalDouble.of(pendingDepth);
-            } else if (pendingDepth != null && depthClear.isEmpty()) {
+                effectiveDepthClear = OptionalDouble.of(pendingDepth);
+            } else if (pendingDepth != null && effectiveDepthClear.isEmpty()) {
                 flushPendingClear(metalDepth);
             } else {
                 pendingDepthClears.remove(metalDepth);
@@ -220,26 +248,34 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
             metalDepth.markContentsDirty();
         }
 
-        assert descriptor.renderArea != null;
-        RenderPass.RenderArea renderArea = descriptor.renderArea;
+
         MetalRenderPass renderPass = new MetalRenderPass(
                 device,
                 this,
-                descriptor.label(),
+                debugGroup,
                 colorTexture,
                 depthTexture,
-                renderArea,
-                colorClear.orElse(null),
-                depthClear.isPresent(),
-                depthClear.orElse(0.0)
+                colorClear,
+                effectiveDepthClear.isPresent(),
+                effectiveDepthClear.orElse(0.0)
         );
         currentRenderPass = renderPass;
-        renderPass.pushDebugGroup(descriptor.label());
+        renderPass.pushDebugGroup(debugGroup);
         return renderPass;
     }
 
-    @Override
-    public void submitRenderPass() {
+    /**
+     * 1.21.11 的 clearColor 为 ARGB int（0xAARRGGBB）。格式约定以运行时验证为准。
+     */
+    private static Vector4f fromArgbInt(final int color) {
+        float a = ((color >> 24) & 0xFF) / 255.0F;
+        float r = ((color >> 16) & 0xFF) / 255.0F;
+        float g = ((color >> 8) & 0xFF) / 255.0F;
+        float b = (color & 0xFF) / 255.0F;
+        return new Vector4f(r, g, b, a);
+    }
+
+    void submitRenderPass() {
         if (currentRenderPass != null) {
             currentRenderPass.materializePendingClear();
             currentRenderPass.popDebugGroup();
@@ -257,22 +293,31 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
     }
 
     @Override
-    public void clearColorTexture(final @NonNull GpuTexture colorTexture, final @NonNull Vector4fc clearColor) {
-        pendingColorClears.put((MetalGpuTexture) colorTexture, new Vector4f(clearColor));
+    public void presentTexture(final @NonNull GpuTextureView textureView) {
+        // 1.21.11 无 GpuSurface：present 由 CommandEncoder 直接承担，每帧末提交
+        MetalGpuTexture src = (MetalGpuTexture) textureView.texture();
+        presentTextureToDrawable(device.metalLayer(), textureView);
+        submit();
+    }
+
+
+    @Override
+    public void clearColorTexture(final @NonNull GpuTexture colorTexture, final int clearColor) {
+        pendingColorClears.put((MetalGpuTexture) colorTexture, fromArgbInt(clearColor));
     }
 
     @Override
-    public void clearColorAndDepthTextures(final @NonNull GpuTexture colorTexture, final @NonNull Vector4fc clearColor, final @NonNull GpuTexture depthTexture, final double clearDepth) {
+    public void clearColorAndDepthTextures(final @NonNull GpuTexture colorTexture, final int clearColor, final @NonNull GpuTexture depthTexture, final double clearDepth) {
         MetalGpuTexture color = (MetalGpuTexture) colorTexture;
         MetalGpuTexture depth = (MetalGpuTexture) depthTexture;
-        pendingColorClears.put(color, new Vector4f(clearColor));
+        pendingColorClears.put(color, fromArgbInt(clearColor));
         pendingDepthClears.put(depth, clearDepth);
     }
 
     @Override
     public void clearColorAndDepthTextures(
             final @NonNull GpuTexture colorTexture,
-            final @NonNull Vector4fc clearColor,
+            final int clearColor,
             final @NonNull GpuTexture depthTexture,
             final double clearDepth,
             final int regionX,
@@ -282,7 +327,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
     ) {
         MetalGpuTexture color = (MetalGpuTexture) colorTexture;
         MetalGpuTexture depth = (MetalGpuTexture) depthTexture;
-        Vector4fc clearColorCopy = new Vector4f(clearColor);
+        Vector4fc clearColorCopy = fromArgbInt(clearColor);
         if (isFullTextureRegion(color, depth, regionX, regionY, regionWidth, regionHeight)) {
             pendingColorClears.put(color, clearColorCopy);
             pendingDepthClears.put(depth, clearDepth);
@@ -323,7 +368,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
             return;
         }
 
-        GpuBufferSlice staging = transientMemory.uploadStaging(data, 4L, GpuBuffer.USAGE_COPY_SRC);
+        GpuBufferSlice staging = transientMemory.uploadStaging(data, 4L, GpuBuffer.USAGE_COPY_SRC, 0L, 1L);
         MetalGpuBuffer stagingBuffer = (MetalGpuBuffer) staging.buffer();
 
         MTLBlitCommandEncoder blit = blitCommandEncoder();
@@ -406,6 +451,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
     public void writeToTexture(
             final @NonNull GpuTexture destination,
             final @NonNull ByteBuffer source,
+            final NativeImage.Format format,
             final int mipLevel,
             final int depthOrLayer,
             final int destX,
@@ -416,10 +462,11 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         MetalGpuTexture metalDst = (MetalGpuTexture) destination;
         flushPendingClearForWrite(metalDst);
 
-        int pixelSize = metalDst.pixelSize();
+        // 1.21.11 的 NativeImage.Format 无 componentCount 映射：MC 纹理统一 RGBA8
+        int pixelSize = 4;
         int rowBytes = width * pixelSize;
         int bytesPerImage = rowBytes * height;
-        GpuBufferSlice slice = transientMemory.uploadStaging(source.duplicate().limit(bytesPerImage), pixelSize, GpuBuffer.USAGE_COPY_SRC);
+        GpuBufferSlice slice = transientMemory.uploadStaging(source.duplicate().limit(bytesPerImage), pixelSize, GpuBuffer.USAGE_COPY_SRC, 0L, 1L);
 
         MTLBlitCommandEncoder blit = blitCommandEncoder();
         blit.copyFromBufferToTexture(
@@ -439,47 +486,71 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
     }
 
     @Override
-    public void copyBufferToTexture(
-            final @NonNull GpuBufferSlice source,
-            final int sourceX,
-            final int sourceY,
-            final int sourceWidth,
-            final int sourceHeight,
+    public void writeToTexture(
             final @NonNull GpuTexture destination,
-            final int destinationX,
-            final int destinationY,
-            final int copyWidth,
-            final int copyHeight,
+            final @NonNull NativeImage image,
             final int mipLevel,
-            final int arrayLayer
+            final int depthOrLayer,
+            final int x,
+            final int y,
+            final int width,
+            final int height,
+            final int sourceX,
+            final int sourceY
     ) {
         MetalGpuTexture metalDst = (MetalGpuTexture) destination;
         flushPendingClearForWrite(metalDst);
 
-        int texelSize = destination.getFormat().blockSize();
-        long skipBytes = (sourceX + (long) sourceY * sourceWidth) * texelSize;
-        long rowBytes = (long) sourceWidth * texelSize;
-
-        MTLBlitCommandEncoder blit = blitCommandEncoder();
-        blit.copyFromBufferToTexture(
-                ((MetalGpuBuffer) source.buffer()).nativeHandle(),
-                source.offset() + skipBytes,
-                metalDst.nativeHandle(),
-                mipLevel,
-                arrayLayer,
-                destinationX,
-                destinationY,
-                copyWidth,
-                copyHeight,
-                rowBytes,
-                rowBytes * sourceHeight
-        );
-        endEncoder();
+        // 1.21.11 的 NativeImage 无 getPixels()：逐像素 getPixel（javap 实证返回 ARGB 0xAARRGGBB）
+        int rowBytes = width * 4;
+        int bytesPerImage = rowBytes * height;
+        ByteBuffer region = MemoryUtil.memAlloc(bytesPerImage);
+        try {
+            for (int row = 0; row < height; row++) {
+                // region 是目标区域缓冲（height*width*4），行从 0 排布；
+                // 源坐标 (sourceX/sourceY) 仅用于 getPixel 取样，不得乘进行距
+                int rowStart = row * rowBytes;
+                for (int col = 0; col < width; col++) {
+                    int argb = image.getPixel(sourceX + col, sourceY + row);
+                    int pos = rowStart + col * 4;
+                    // ARGB → RGBA 字节序（Metal RGBA8Unorm 期望 R,G,B,A）
+                    region.put(pos, (byte) ((argb >> 16) & 0xFF));
+                    region.put(pos + 1, (byte) ((argb >> 8) & 0xFF));
+                    region.put(pos + 2, (byte) (argb & 0xFF));
+                    region.put(pos + 3, (byte) ((argb >> 24) & 0xFF));
+                }
+            }
+            region.position(0).limit(bytesPerImage);
+            GpuBufferSlice slice = transientMemory.uploadStaging(region, 4L, GpuBuffer.USAGE_COPY_SRC, 0L, 1L);
+            MTLBlitCommandEncoder blit = blitCommandEncoder();
+            blit.copyFromBufferToTexture(
+                    ((MetalGpuBuffer) slice.buffer()).nativeHandle(),
+                    slice.offset(),
+                    metalDst.nativeHandle(),
+                    mipLevel,
+                    depthOrLayer,
+                    x,
+                    y,
+                    width,
+                    height,
+                    rowBytes,
+                    bytesPerImage
+            );
+            endEncoder();
+        } finally {
+            MemoryUtil.memFree(region);
+        }
     }
 
     @Override
     public void copyTextureToBuffer(final @NonNull GpuTexture source, final @NonNull GpuBuffer destination, final long offset, final @NonNull Runnable callback, final int mipLevel) {
         copyTextureToBuffer(source, destination, offset, callback, mipLevel, 0, 0, source.getWidth(mipLevel), source.getHeight(mipLevel));
+    }
+
+    @Override
+    public void writeToTexture(final @NonNull GpuTexture destination, final @NonNull NativeImage image) {
+        // 2 参重载：整图上传（1.21.11 的 writeToTexture(NativeImage) 无区域参数）
+        writeToTexture(destination, image, 0, 0, 0, 0, image.getWidth(), image.getHeight(), 0, 0);
     }
 
     @Override
@@ -552,8 +623,62 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
     }
 
     @Override
+    public GpuBuffer.MappedView mapBuffer(final GpuBuffer buffer, final boolean read, final boolean write) {
+        return mapBuffer(buffer.slice(0L, buffer.size()), read, write);
+    }
+
+    @Override
+    public GpuBuffer.MappedView mapBuffer(final GpuBufferSlice slice, final boolean read, final boolean write) {
+        // 1.21.11 的 GpuBuffer 无 map()：直接经 sliceStorage 映射（CPU 可访问缓冲）
+        MetalGpuBuffer buffer = (MetalGpuBuffer) slice.buffer();
+        if (buffer.isClosed()) {
+            throw new IllegalStateException("Buffer already closed");
+        }
+        if (!read && !write) {
+            throw new IllegalArgumentException("At least read or write must be true");
+        }
+        if (read && (buffer.usage() & GpuBuffer.USAGE_MAP_READ) == 0) {
+            throw new IllegalStateException("Buffer is not readable");
+        }
+        if (write && (buffer.usage() & GpuBuffer.USAGE_MAP_WRITE) == 0) {
+            throw new IllegalStateException("Buffer is not writable");
+        }
+        ByteBuffer mapped = buffer.sliceStorage(slice.offset(), slice.length());
+        return new GpuBuffer.MappedView() {
+            @Override
+            public ByteBuffer data() {
+                return mapped;
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+    }
+
+    @Override
     public @NonNull GpuFence createFence() {
         return new MetalFence(this, currentSubmitIndex);
+    }
+
+    @Override
+    public @NonNull GpuQuery timerQueryBegin() {
+        // 时间戳查询为空实现：返回无值 query
+        return new GpuQuery() {
+            @Override
+            public OptionalLong getValue() {
+                return OptionalLong.empty();
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+    }
+
+    @Override
+    public void timerQueryEnd(final @NonNull GpuQuery query) {
+        // 1.21.11 无 GpuQueryPool：时间戳查询为空实现
     }
 
     void queueForDestroy(final Runnable destroyAction) {
@@ -562,6 +687,9 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
 
     boolean awaitSubmitCompletion(final long submitIndex, final long timeoutMs) {
         if (submitIndex == currentSubmitIndex) {
+            if (timeoutMs == 0L) {
+                return false;
+            }
             throw new IllegalStateException("Cannot wait on a fence for the current submit");
         }
         for (InFlight f : inFlight) {
@@ -615,13 +743,6 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         }
     }
 
-    @Override
-    public void writeTimestamp(final @NonNull GpuQueryPool pool, final int index) {
-        if (pool instanceof MetalGpuQueryPool metalPool && index >= 0 && index < pool.size()) {
-            metalPool.setValue(index, device.getTimestampNow());
-        }
-    }
-
     private void flushPendingClearForWrite(final MetalGpuTexture texture) {
         flushPendingClear(texture);
         texture.markContentsDirty();
@@ -656,6 +777,10 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
         texture.recordMaterializedClear(colorClear, depthClear);
     }
 
+    /**
+     * 深度纹理读回（Depth32Float）：主 pass 后读 4×4 采样，看 clear 值与是否被
+     * 方块写入。均匀=只有 clear（方块未写深度）；非均匀=方块渲染了。
+     */
     private static boolean isFullTextureView(final GpuTextureView textureView) {
         return textureView.baseMipLevel() == 0
                 && textureView.mipLevels() >= textureView.texture().getMipLevels()

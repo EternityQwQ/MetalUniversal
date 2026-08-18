@@ -4,8 +4,8 @@ import com.metallum.client.metal.render.bridge.MetalNativeBridge;
 import com.metallum.client.metal.render.mtl.MTLPixelFormat;
 import com.metallum.client.metal.render.mtl.MTLStorageMode;
 import com.metallum.client.metal.render.mtl.MTLTextureUsage;
-import com.mojang.blaze3d.GpuFormat;
 import com.mojang.blaze3d.textures.GpuTexture;
+import com.mojang.blaze3d.textures.TextureFormat;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import org.joml.Vector4fc;
@@ -28,9 +28,9 @@ final class MetalGpuTexture extends GpuTexture {
 
     MetalGpuTexture(
             final MetalDevice device,
-            @GpuTexture.Usage final int usage,
+            final int usage,
             final String label,
-            final GpuFormat format,
+            final TextureFormat format,
             final int width,
             final int height,
             final int depthOrLayers,
@@ -55,7 +55,8 @@ final class MetalGpuTexture extends GpuTexture {
     }
 
     int pixelSize() {
-        return this.getFormat().blockSize();
+        // 1.21.11 的 TextureFormat 无 blockSize()，用 pixelSize()
+        return this.getFormat().pixelSize();
     }
 
     void recordMaterializedClear(@Nullable final Vector4fc color, @Nullable final Double depth) {
@@ -126,7 +127,7 @@ final class MetalGpuTexture extends GpuTexture {
         return this.closed;
     }
 
-    private static long toMtlTextureUsage(@GpuTexture.Usage final int usage) {
+    private static long toMtlTextureUsage(final int usage) {
         long result = 0L;
         if ((usage & GpuTexture.USAGE_TEXTURE_BINDING) != 0 || (usage & GpuTexture.USAGE_COPY_DST) != 0 || (usage & GpuTexture.USAGE_COPY_SRC) != 0) {
             result |= MTLTextureUsage.ShaderRead.value;

@@ -72,52 +72,13 @@ public enum MTLPixelFormat {
         return this == Depth24Unorm_Stencil8 || this == Depth32Float_Stencil8;
     }
 
-    public static MTLPixelFormat from(final com.mojang.blaze3d.GpuFormat format) {
+    public static MTLPixelFormat from(final com.mojang.blaze3d.textures.TextureFormat format) {
+        // 1.21.11 的 TextureFormat 仅 4 值（26.2 的 GpuFormat 有数十种）
         return switch (format) {
-            case R8_UNORM -> R8Unorm;
-            case R8_SNORM -> R8Snorm;
-            case R8_UINT -> R8Uint;
-            case R8_SINT -> R8Sint;
-            case R16_UNORM -> R16Unorm;
-            case R16_SNORM -> R16Snorm;
-            case R16_UINT -> R16Uint;
-            case R16_SINT -> R16Sint;
-            case R16_FLOAT -> R16Float;
-            case RG8_UNORM -> RG8Unorm;
-            case RG8_SNORM -> RG8Snorm;
-            case RG8_UINT -> RG8Uint;
-            case RG8_SINT -> RG8Sint;
-            case R32_UINT -> R32Uint;
-            case R32_SINT -> R32Sint;
-            case R32_FLOAT -> R32Float;
-            case RG16_UNORM -> RG16Unorm;
-            case RG16_SNORM -> RG16Snorm;
-            case RG16_UINT -> RG16Uint;
-            case RG16_SINT -> RG16Sint;
-            case RG16_FLOAT -> RG16Float;
-            case RGBA8_UNORM -> RGBA8Unorm;
-            case RGBA8_SNORM -> RGBA8Snorm;
-            case RGBA8_UINT -> RGBA8Uint;
-            case RGBA8_SINT -> RGBA8Sint;
-            case RGB10A2_UNORM -> RGB10A2Unorm;
-            case RG11B10_FLOAT -> RG11B10Float;
-            case RG32_UINT -> RG32Uint;
-            case RG32_SINT -> RG32Sint;
-            case RG32_FLOAT -> RG32Float;
-            case RGBA16_UNORM -> RGBA16Unorm;
-            case RGBA16_SNORM -> RGBA16Snorm;
-            case RGBA16_UINT -> RGBA16Uint;
-            case RGBA16_SINT -> RGBA16Sint;
-            case RGBA16_FLOAT -> RGBA16Float;
-            case RGBA32_UINT -> RGBA32Uint;
-            case RGBA32_SINT -> RGBA32Sint;
-            case RGBA32_FLOAT -> RGBA32Float;
-            case D16_UNORM -> Depth16Unorm;
-            case D32_FLOAT -> Depth32Float;
-            case S8_UINT -> Stencil8;
-            case D24_UNORM_S8_UINT -> Depth24Unorm_Stencil8;
-            case D32_FLOAT_S8_UINT -> Depth32Float_Stencil8;
-            default -> throw new IllegalStateException("Unsupported Metal texel buffer format: " + format);
+            case RGBA8 -> RGBA8Unorm;
+            case RED8 -> R8Unorm;
+            case RED8I -> R8Uint;
+            case DEPTH32 -> Depth32Float;
         };
     }
 }

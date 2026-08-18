@@ -1,13 +1,14 @@
 package com.metallum.client.metal.render;
 
+import com.metallum.Metallum;
 import com.metallum.client.metal.render.bridge.MetalNativeBridge;
 import com.metallum.client.metal.render.mtl.*;
-import com.mojang.blaze3d.GpuFormat;
 import com.mojang.blaze3d.pipeline.BlendFunction;
-import com.mojang.blaze3d.pipeline.ColorTargetState;
 import com.mojang.blaze3d.pipeline.CompiledRenderPipeline;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
+import com.mojang.blaze3d.platform.DepthTestFunction;
 import com.mojang.blaze3d.platform.PolygonMode;
+import com.mojang.blaze3d.textures.TextureFormat;
 import com.mojang.blaze3d.vertex.VertexFormat;
 import com.mojang.blaze3d.vertex.VertexFormatElement;
 import net.fabricmc.api.EnvType;
@@ -18,6 +19,7 @@ import java.lang.foreign.MemorySegment;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 @Environment(EnvType.CLIENT)
 final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoCloseable {
@@ -32,7 +34,7 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
     static final int STAGE_ALL = STAGE_VERTEX | STAGE_FRAGMENT;
 
     record ResourceBinding(ResourceKind kind, String name, int bindingIndex, int stageMask,
-                           @Nullable GpuFormat texelBufferFormat) {
+                           @Nullable TextureFormat texelBufferFormat) {
     }
 
     private final List<ResourceBinding> resources;
@@ -45,10 +47,18 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
     private final float depthBiasConstant;
     private final MTLPrimitiveType topology;
     private final int vertexBufferCount;
+    private final MTLCompareFunction depthCompareOp;
+    private final int depthWrite;
 
     private final MemorySegment depthStencilState;
-    private final MemorySegment withDepthPipeline;
-    private final MemorySegment withoutDepthPipeline;
+    private volatile MemorySegment withDepthPipeline;
+    private volatile MemorySegment withoutDepthPipeline;
+    private final MetalDevice device;
+    private final RenderPipeline pipeline;
+    private final MemorySegment vertexFunction;
+    private final MemorySegment fragmentFunction;
+    private final Set<String> integerInputs;
+    private final java.util.Map<String, Integer> globalsBindings;
 
     MetalCompiledRenderPipeline(
             final MetalDevice device,
@@ -57,8 +67,11 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
             final String fragmentMsl,
             final String vertexEntryPoint,
             final String fragmentEntryPoint,
-            final List<ResourceBinding> resources
+            final List<ResourceBinding> resources,
+            final Set<String> integerInputs,
+            final java.util.Map<String, Integer> globalsBindings
     ) {
+        this.globalsBindings = globalsBindings;
         this.resources = resources;
         this.resourcesByName = resources.stream().collect(java.util.stream.Collectors.toUnmodifiableMap(ResourceBinding::name, binding -> binding));
 
@@ -76,23 +89,22 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
         this.firstAvailableVertexBufferSlot = firstAvailableVertexBufferSlot(resources);
         this.cullMode = info.isCull() ? MTLCullMode.Back : MTLCullMode.None;
         this.fillMode = info.getPolygonMode() == PolygonMode.WIREFRAME ? MTLTriangleFillMode.Lines : MTLTriangleFillMode.Fill;
-        this.topology = MTLPrimitiveType.from(info.getPrimitiveTopology());
-        this.vertexBufferCount = info.getVertexFormatBindings().length;
+        this.topology = MTLPrimitiveType.from(info.getVertexFormatMode());
+        // 1.21.11 单 VertexFormat（26.2 的 getVertexFormatBindings 为多绑定列表）
+        this.vertexBufferCount = 1;
+        this.device = device;
+        this.pipeline = info;
+        this.integerInputs = integerInputs;
 
-        MTLCompareFunction depthCompareOp;
-        int depthWrite;
-        var depthStencilState = info.getDepthStencilState();
-        if (depthStencilState == null) {
-            depthCompareOp = MTLCompareFunction.Always;
-            depthWrite = 0;
-            this.depthBiasScaleFactor = 0.0f;
-            this.depthBiasConstant = 0.0f;
-        } else {
-            depthCompareOp = MTLCompareFunction.from(depthStencilState.depthTest());
-            depthWrite = depthStencilState.writeDepth() ? 1 : 0;
-            this.depthBiasScaleFactor = depthStencilState.depthBiasScaleFactor();
-            this.depthBiasConstant = depthStencilState.depthBiasConstant();
-        }
+        // 1.21.11 无 DepthStencilState 对象：深度状态由 DepthTestFunction + writeDepth 布尔推导
+        DepthTestFunction depthTest = info.getDepthTestFunction();
+        boolean hasDepthTest = depthTest != DepthTestFunction.NO_DEPTH_TEST;
+        MTLCompareFunction depthCompareOp = MTLCompareFunction.from(depthTest);
+        int depthWrite = info.isWriteDepth() ? 1 : 0;
+        this.depthCompareOp = depthCompareOp;
+        this.depthWrite = depthWrite;
+        this.depthBiasScaleFactor = info.getDepthBiasScaleFactor();
+        this.depthBiasConstant = info.getDepthBiasConstant();
 
         this.depthStencilState = MetalNativeBridge.MTLDevice_makeDepthStencilState(
                 device.metalDeviceHandle(),
@@ -100,65 +112,90 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
                 depthWrite
         );
 
-        var colorTarget = info.getColorTargetState();
-        MTLPixelFormat colorFormat = colorTarget != null ? MTLPixelFormat.from(colorTarget.format()) : MTLPixelFormat.RGBA8Unorm;
+        this.vertexFunction = device.getOrCompileFunction(vertexMsl, vertexEntryPoint);
+        this.fragmentFunction = device.getOrCompileFunction(fragmentMsl, fragmentEntryPoint);
+    }
 
-        MemorySegment vertexFunction = device.getOrCompileFunction(vertexMsl, vertexEntryPoint);
-        MemorySegment fragmentFunction = device.getOrCompileFunction(fragmentMsl, fragmentEntryPoint);
-
-        try (MTLVertexDescriptor vertexDescriptor = buildVertexDescriptor(info, this.firstAvailableVertexBufferSlot)) {
-            this.withoutDepthPipeline = createPipeline(device, info, vertexFunction, fragmentFunction, vertexDescriptor, colorFormat, MTLPixelFormat.Invalid);
-            this.withDepthPipeline = createPipeline(device, info, vertexFunction, fragmentFunction, vertexDescriptor, colorFormat, MTLPixelFormat.Depth32Float);
+    /**
+     * 1.21.11 的 RenderPipeline 无 ColorTargetState：attachment 格式由 RenderPass
+     * 从渲染目标纹理推导，pipeline 状态因此按需创建并缓存（每种 colorFormat 一份）。
+     */
+    MemorySegment getNativePipeline(final boolean useDepth, final MTLPixelFormat colorFormat) {
+        if (useDepth) {
+            MemorySegment cached = this.withDepthPipeline;
+            if (cached != null) {
+                return cached;
+            }
+            synchronized (this) {
+                cached = this.withDepthPipeline;
+                if (cached == null) {
+                    cached = createPipeline(colorFormat, MTLPixelFormat.Depth32Float);
+                    this.withDepthPipeline = cached;
+                }
+                return cached;
+            }
+        }
+        MemorySegment cached = this.withoutDepthPipeline;
+        if (cached != null) {
+            return cached;
+        }
+        synchronized (this) {
+            cached = this.withoutDepthPipeline;
+            if (cached == null) {
+                cached = createPipeline(colorFormat, MTLPixelFormat.Invalid);
+                this.withoutDepthPipeline = cached;
+            }
+            return cached;
         }
     }
 
-    private static MemorySegment createPipeline(
-            final MetalDevice device,
-            final RenderPipeline info,
-            final MemorySegment vertexFunction,
-            final MemorySegment fragmentFunction,
-            final MTLVertexDescriptor vertexDescriptor,
+    private MemorySegment createPipeline(
             final MTLPixelFormat colorFormat,
             final MTLPixelFormat depthFormat
     ) {
-        if (MetalNativeBridge.isNullHandle(vertexFunction) || MetalNativeBridge.isNullHandle(fragmentFunction)) {
+        if (MetalNativeBridge.isNullHandle(this.vertexFunction) || MetalNativeBridge.isNullHandle(this.fragmentFunction)) {
             return MemorySegment.NULL;
         }
 
-        ColorTargetState colorTarget = info.getColorTargetState();
-        Optional<BlendFunction> blendFunction = colorTarget == null ? Optional.empty() : colorTarget.blendFunction();
-        long writeMask = colorTarget == null ? MTLColorWriteMask.All.value : MTLColorWriteMask.from(colorTarget.writeMask());
+        // 1.21.11 无 ColorTargetState：blend/writeMask 直接来自 RenderPipeline
+        Optional<BlendFunction> blendFunction = this.pipeline.getBlendFunction();
+        long writeMask = MTLColorWriteMask.from(this.pipeline.isWriteColor(), this.pipeline.isWriteAlpha());
 
-        try (MTLRenderPipelineDescriptor pipelineDesc = new MTLRenderPipelineDescriptor()) {
-            pipelineDesc.setCompiledFunctions(vertexFunction, fragmentFunction);
+        try (MTLVertexDescriptor vertexDescriptor = buildVertexDescriptor(this.pipeline, this.firstAvailableVertexBufferSlot);
+             MTLRenderPipelineDescriptor pipelineDesc = new MTLRenderPipelineDescriptor()) {
+            pipelineDesc.setCompiledFunctions(this.vertexFunction, this.fragmentFunction);
             pipelineDesc.setVertexDescriptor(vertexDescriptor);
             pipelineDesc.setAttachmentFormats(colorFormat, depthFormat, MTLPixelFormat.Invalid);
 
             if (blendFunction.isPresent()) {
                 var function = blendFunction.get();
                 pipelineDesc.setBlendState(
-                        MTLBlendFactor.from(function.color().sourceFactor()),
-                        MTLBlendFactor.from(function.color().destFactor()),
-                        MTLBlendOperation.from(function.color().op()),
-                        MTLBlendFactor.from(function.alpha().sourceFactor()),
-                        MTLBlendFactor.from(function.alpha().destFactor()),
-                        MTLBlendOperation.from(function.alpha().op()),
+                        MTLBlendFactor.from(function.sourceColor()),
+                        MTLBlendFactor.from(function.destColor()),
+                        MTLBlendOperation.from(),
+                        MTLBlendFactor.from(function.sourceAlpha()),
+                        MTLBlendFactor.from(function.destAlpha()),
+                        MTLBlendOperation.from(),
                         writeMask
                 );
             } else {
                 pipelineDesc.disableBlending(writeMask);
             }
 
-            return MetalNativeBridge.metallum_MTLDevice_makeRenderPipelineState(
-                    device.metalDeviceHandle(),
+            MemorySegment pipeline = MetalNativeBridge.metallum_MTLDevice_makeRenderPipelineState(
+                    this.device.metalDeviceHandle(),
                     pipelineDesc.handle()
             );
+            if (MetalNativeBridge.isNullHandle(pipeline)) {
+                Metallum.LOGGER.error("[metallum] Pipeline {} failed to build with depth format {}", this.pipeline.getLocation(), depthFormat);
+            }
+            return pipeline;
         }
     }
 
     @Override
     public boolean isValid() {
-        return !MetalNativeBridge.isNullHandle(this.withoutDepthPipeline);
+        return !MetalNativeBridge.isNullHandle(this.vertexFunction) && !MetalNativeBridge.isNullHandle(this.fragmentFunction);
     }
 
     List<ResourceBinding> resources() {
@@ -186,12 +223,16 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
         return this.depthBiasConstant;
     }
 
-    MemorySegment getDepthStencilState() {
-        return this.depthStencilState;
+    MTLCompareFunction depthCompareOp() {
+        return this.depthCompareOp;
     }
 
-    MemorySegment getNativePipeline(final boolean useDepth) {
-        return useDepth && !MetalNativeBridge.isNullHandle(this.withDepthPipeline) ? this.withDepthPipeline : this.withoutDepthPipeline;
+    int depthWrite() {
+        return this.depthWrite;
+    }
+
+    MemorySegment getDepthStencilState() {
+        return this.depthStencilState;
     }
 
     MTLCullMode cullMode() {
@@ -206,39 +247,58 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
         return this.topology;
     }
 
+    /**
+     * 原始顶点拓扑模式（1.21.11 的 VertexFormat.Mode）——诊断日志用。
+     */
+    com.mojang.blaze3d.vertex.VertexFormat.Mode getVertexFormatMode() {
+        return this.pipeline.getVertexFormatMode();
+    }
+
+    com.mojang.blaze3d.vertex.VertexFormat getVertexFormat() {
+        return this.pipeline.getVertexFormat();
+    }
+
+    /**
+     * Globals UBO 的 buffer index（按 stage：vertex/fragment）——独立绑定路径，
+     * 由 MetalRenderPass.bindDrawState 每帧绑定 MetalBackend 捕获的 buffer。
+     */
+    @Nullable
+    Integer getGlobalsBinding(final String stage) {
+        return this.globalsBindings.get(stage);
+    }
+
     int vertexBufferCount() {
         return this.vertexBufferCount;
     }
 
-    private static MTLVertexDescriptor buildVertexDescriptor(
+    private MTLVertexDescriptor buildVertexDescriptor(
             final RenderPipeline pipeline,
             final int firstMetalVertexBufferSlot
     ) {
-        VertexFormat[] bindings = pipeline.getVertexFormatBindings();
+        VertexFormat binding = pipeline.getVertexFormat();
         MTLVertexDescriptor vertexDesc = new MTLVertexDescriptor();
+        if (binding.getElements().isEmpty()) {
+            return vertexDesc;
+        }
+
+        int metalSlot = firstMetalVertexBufferSlot;
+        long stride = binding.getVertexSize();
+        // 1.21.11 无实例步进（getStepRate 不存在）：统一 PerVertex
+        vertexDesc.setLayout(metalSlot, stride, MTLVertexStepFunction.PerVertex, 1);
+
         long attrIndex = 0;
-
-        for (int i = 0; i < bindings.length; i++) {
-            VertexFormat binding = bindings[i];
-            if (binding == null || binding.getElements().isEmpty()) {
-                continue;
+        for (VertexFormatElement element : binding.getElements()) {
+            // shader 声明为 int/uint 的输入（如 ivec2 UV2）用非 normalized 格式，
+            // 否则 Metal 报 "Cannot convert attribute from *Normalized to int2 or uint2"
+            String attributeName = binding.getElementName(element);
+            MTLVertexFormat format = integerInputs.contains(attributeName)
+                    ? MTLVertexFormat.fromInteger(element.type(), element.count())
+                    : MTLVertexFormat.from(element.type(), element.count());
+            if (format == MTLVertexFormat.Invalid) {
+                throw new IllegalStateException("Unsupported vertex attribute format: " + element.type() + "x" + element.count());
             }
-
-            int metalSlot = firstMetalVertexBufferSlot + i;
-
-            long stride = binding.getVertexSize();
-            long stepRate = binding.getStepRate();
-            MTLVertexStepFunction stepFunction = stepRate > 0 ? MTLVertexStepFunction.PerInstance : MTLVertexStepFunction.PerVertex;
-            vertexDesc.setLayout(metalSlot, stride, stepFunction, stepRate > 0 ? stepRate : 1);
-
-            for (VertexFormatElement element : binding.getElements()) {
-                MTLVertexFormat format = MTLVertexFormat.from(element.format());
-                if (format == MTLVertexFormat.Invalid) {
-                    throw new IllegalStateException("Unsupported vertex attribute format: " + element.format());
-                }
-                vertexDesc.setAttribute(attrIndex, format.value, element.offset(), metalSlot);
-                attrIndex++;
-            }
+            vertexDesc.setAttribute(attrIndex, format.value, binding.getOffset(element), metalSlot);
+            attrIndex++;
         }
 
         return vertexDesc;
@@ -256,11 +316,13 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
 
     @Override
     public void close() {
-        if (!MetalNativeBridge.isNullHandle(this.withDepthPipeline)) {
-            MetalNativeBridge.metallum_release_object(this.withDepthPipeline);
+        MemorySegment withDepth = this.withDepthPipeline;
+        if (withDepth != null && !MetalNativeBridge.isNullHandle(withDepth)) {
+            MetalNativeBridge.metallum_release_object(withDepth);
         }
-        if (!MetalNativeBridge.isNullHandle(this.withoutDepthPipeline)) {
-            MetalNativeBridge.metallum_release_object(this.withoutDepthPipeline);
+        MemorySegment withoutDepth = this.withoutDepthPipeline;
+        if (withoutDepth != null && !MetalNativeBridge.isNullHandle(withoutDepth)) {
+            MetalNativeBridge.metallum_release_object(withoutDepth);
         }
     }
 }

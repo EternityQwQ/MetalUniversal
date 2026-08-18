@@ -29,5 +29,12 @@ public class Metallum implements ModInitializer, PreLaunchEntrypoint {
 
     @Override
     public void onInitialize() {
+        // Sodium 0.8.x（1.21.11 时代）直接调用 GL API，无后端抽象（0.9.x 的
+        // DrawBackend/VK_INDIRECT 体系是 26.x 才有的）：Metal 后端下 Sodium 无法工作。
+        // macOS/iOS 上 Sodium 本身也不受支持，这里仅提示，不阻断启动。
+        if (net.fabricmc.loader.api.FabricLoader.getInstance().isModLoaded("sodium")) {
+            LOGGER.warn("MetalUniversal 检测到 Sodium：1.21.11 的 Sodium（0.8.x）直接调用 GL API，"
+                    + "与 Metal 后端互斥（无后端抽象可注入），在 Metal 主机上可能出现黑屏或崩溃，建议移除。");
+        }
     }
 }
