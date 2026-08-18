@@ -56,6 +56,17 @@ final class MetalDevice implements GpuDeviceBackend {
             return true;
         }
     };
+    private static final int MAX_TEXEL_VIEWS = 128;
+    private final Map<TexelTexelViewKey, MemorySegment> texelViewCache = new LinkedHashMap<>(16, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(final Map.Entry<TexelTexelViewKey, MemorySegment> eldest) {
+            if (size() <= MAX_TEXEL_VIEWS) {
+                return false;
+            }
+            MetalNativeBridge.metallum_release_object(eldest.getValue());
+            return true;
+        }
+    };
     private ShaderSource activeShaderSource;
 
     MetalDevice(
@@ -190,6 +201,12 @@ final class MetalDevice implements GpuDeviceBackend {
             }
         }
         this.functionCache.clear();
+        for (MemorySegment view : this.texelViewCache.values()) {
+            if (!MetalNativeBridge.isNullHandle(view)) {
+                MetalNativeBridge.metallum_release_object(view);
+            }
+        }
+        this.texelViewCache.clear();
     }
 
     @Override
@@ -256,6 +273,30 @@ final class MetalDevice implements GpuDeviceBackend {
                 MetalNativeBridge.metallum_release_object(handle);
             }
         });
+    }
+
+    /** Returns a cached Metal texture view over a texel buffer, creating one on first use. The returned
+     *  segment remains owned by this cache and must not be released by callers. */
+    MemorySegment getOrCreateTexelView(
+            final MetalGpuBuffer texelBuffer,
+            final long pixelFormat,
+            final long offset,
+            final long texelCount,
+            final long height,
+            final long bytesPerRow
+    ) {
+        TexelTexelViewKey key = new TexelTexelViewKey(texelBuffer.nativeHandle().address(), pixelFormat, offset, bytesPerRow, texelCount, height);
+        MemorySegment cached = texelViewCache.get(key);
+        if (cached != null && !MetalNativeBridge.isNullHandle(cached)) {
+            return cached;
+        }
+        MemorySegment view = MetalNativeBridge.metallum_create_buffer_texture_view(
+                texelBuffer.nativeHandle(), pixelFormat, offset, texelCount, height, bytesPerRow);
+        if (!MetalNativeBridge.isNullHandle(view)) {
+            texelViewCache.put(key, view);
+            Stats.recordTexelViewAllocation();
+        }
+        return view;
     }
 
     static long composePoolKey(final long size, final long resourceOptions) {
@@ -335,5 +376,8 @@ final class MetalDevice implements GpuDeviceBackend {
     @Nullable
     private String resolveDebugLabel(@Nullable final Supplier<String> label) {
         return this.useLabels() && label != null ? label.get() : null;
+    }
+
+    private record TexelTexelViewKey(long bufferAddress, long pixelFormat, long offset, long bytesPerRow, long texelCount, long height) {
     }
 }

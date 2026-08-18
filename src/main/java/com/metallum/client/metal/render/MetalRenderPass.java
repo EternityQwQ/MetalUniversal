@@ -197,18 +197,38 @@ final class MetalRenderPass implements RenderPassBackend {
 
     @Override
     public void multiDrawIndexed(@NonNull IntBuffer drawParameters, int instanceCount, int firstInstance, int drawCount) {
+        MTLPrimitiveType primitiveType = primitiveTopology();
         MetalGpuBuffer nativeIndexBuffer = (MetalGpuBuffer) indexBuffer;
         MTLRenderCommandEncoder enc = renderEncoder();
         bindDrawState(enc);
 
-        for (int i = 0; i < drawCount; i++) {
-            int firstIndex = drawParameters.get(i * 3);
-            int indexCount = drawParameters.get(i * 3 + 1);
-            int baseVertex = drawParameters.get(i * 3 + 2);
-            if (indexCount > 0) {
-                drawIndexedNative(enc, nativeIndexBuffer, firstIndex, indexCount, baseVertex, instanceCount, indexType, firstInstance);
+        if (primitiveType == MTLPrimitiveType.TriangleFan) {
+            // Triangle-fan cannot be expressed as a plain batched indexed draw; keep the per-draw
+            // expansion path so results stay identical to drawIndexedNative.
+            for (int i = 0; i < drawCount; i++) {
+                int firstIndex = drawParameters.get(i * 3);
+                int indexCount = drawParameters.get(i * 3 + 1);
+                int baseVertex = drawParameters.get(i * 3 + 2);
+                if (indexCount > 0) {
+                    drawIndexedNative(enc, nativeIndexBuffer, firstIndex, indexCount, baseVertex, instanceCount, indexType, firstInstance);
+                }
             }
+            return;
         }
+
+        // Batched path: a single Java->native crossing executes the whole multi-draw,
+        // replacing one crossing per sub-draw with one crossing for the entire batch.
+        MetalNativeBridge.MTLRenderCommandEncoder_multiDrawIndexedFull(
+                enc.handle(),
+                primitiveType.value,
+                indexType.value,
+                nativeIndexBuffer.nativeHandle(),
+                MemorySegment.ofAddress(org.lwjgl.system.MemoryUtil.memAddress(drawParameters)),
+                drawCount,
+                instanceCount,
+                firstInstance
+        );
+        Stats.recordBatchedMultiDraw();
     }
 
     @Override
@@ -459,6 +479,7 @@ final class MetalRenderPass implements RenderPassBackend {
             final MTLIndexType indexType,
             final int baseInstance
     ) {
+        Stats.recordIndexedDraw();
         MTLPrimitiveType primitiveType = primitiveTopology();
 
         long indexOffsetBytes = (long) firstIndex * indexType.bytes;
@@ -638,8 +659,10 @@ final class MetalRenderPass implements RenderPassBackend {
             throw new IllegalStateException("Texel buffer " + binding.name() + " length " + texelByteLength + " is not a valid " + texelFormat + " range");
         }
         long texelCount = texelByteLength / pixelSize;
-        MemorySegment texelTexture = MetalNativeBridge.metallum_create_buffer_texture_view(
-                texelBuffer.nativeHandle(),
+        // Reuse a cached Metal texture view over this texel buffer instead of allocating and
+        // destroying one per draw. The view is owned by MetalDevice's cache and released with it.
+        MemorySegment texelTexture = device.getOrCreateTexelView(
+                texelBuffer,
                 pixelFormat,
                 texelSlice.offset(),
                 texelCount,
@@ -651,7 +674,6 @@ final class MetalRenderPass implements RenderPassBackend {
         }
 
         enc.setTexture(texelTexture, binding.bindingIndex(), binding.stageMask());
-        commandEncoder.queueForDestroy(() -> MetalNativeBridge.metallum_release_object(texelTexture));
     }
 
     record TextureViewAndSampler(GpuTextureView textureView, GpuSampler sampler) {
