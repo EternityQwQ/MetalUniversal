@@ -127,6 +127,7 @@ final class MetalCommandEncoder implements CommandEncoderBackend {
 
         transientMemory.rotate();
         destroyQueue.rotate();
+        Stats.tickRenderStats();
     }
 
     MTLRenderCommandEncoder renderCommandEncoder(
