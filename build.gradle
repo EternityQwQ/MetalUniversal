@@ -22,6 +22,11 @@ dependencies {
 
 	testImplementation "org.junit.jupiter:junit-jupiter-api:5.10.2"
 	testRuntimeOnly "org.junit.jupiter:junit-jupiter-engine:5.10.2"
+	// Gradle's test executor requires the JUnit Platform launcher on the test
+	// runtime classpath; without it the :test task fails to start the executor
+	// ("Failed to load JUnit Platform"), even though the JUnit Jupiter engine
+	// is present.
+	testRuntimeOnly "org.junit.platform:junit-platform-launcher:1.10.2"
 }
 
 test {
