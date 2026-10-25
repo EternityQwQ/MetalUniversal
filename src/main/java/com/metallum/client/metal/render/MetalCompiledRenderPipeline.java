@@ -8,6 +8,7 @@ import com.mojang.blaze3d.pipeline.BlendFunction;
 import com.mojang.blaze3d.pipeline.ColorTargetState;
 import com.mojang.blaze3d.pipeline.CompiledRenderPipeline;
 import com.mojang.blaze3d.pipeline.DepthStencilState;
+import net.irisshaders.iris.Iris;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.platform.PolygonMode;
 import com.mojang.blaze3d.vertex.VertexFormat;
@@ -41,8 +42,36 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
     static final int STAGE_FRAGMENT = 2;
     static final int STAGE_ALL = STAGE_VERTEX | STAGE_FRAGMENT;
 
+    /**
+     * A pipeline resource and the Metal argument-table indices it occupies.
+     *
+     * <p>Vanilla pipelines use one shared {@code bindingIndex} for both stages.
+     * Shaderpack pipelines may use different per-stage indices for the same
+     * sampled resource (each stage compacts its active sampled images onto
+     * {@code 0..n-1} independently), so the fragment index is tracked
+     * separately. {@link #descriptorMaskIndex()} returns the highest of the two
+     * for dirty-mask bookkeeping; {@link #bindingIndexForStage(int)} selects the
+     * index to pass to the native setter for one stage.
+     */
     record ResourceBinding(ResourceKind kind, String name, int bindingIndex, int stageMask,
-                           @Nullable GpuFormat texelBufferFormat) {
+                           @Nullable GpuFormat texelBufferFormat, int fragmentBindingIndex) {
+        ResourceBinding(
+                ResourceKind kind,
+                String name,
+                int bindingIndex,
+                int stageMask,
+                @Nullable GpuFormat texelBufferFormat
+        ) {
+            this(kind, name, bindingIndex, stageMask, texelBufferFormat, bindingIndex);
+        }
+
+        int bindingIndexForStage(int stageBit) {
+            return stageBit == STAGE_FRAGMENT ? fragmentBindingIndex : bindingIndex;
+        }
+
+        int descriptorMaskIndex() {
+            return Math.max(bindingIndex, fragmentBindingIndex);
+        }
     }
 
     private final List<ResourceBinding> resources;
@@ -59,6 +88,7 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
     private final int vertexBufferCount;
 
     private final MemorySegment depthStencilState;
+    private final @Nullable MemorySegment reverseDepthStencilState;
     private final boolean hasDepthStencilState;
     private final MTLPixelFormat[] colorFormats;
     private final Map<PipelineSignature, MemorySegment> pipelineStates;
@@ -92,8 +122,8 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
         int maxBindingIndex = -1;
         long resourceMask = 0L;
         for (ResourceBinding binding : resources) {
-            maxBindingIndex = Math.max(maxBindingIndex, binding.bindingIndex());
-            resourceMask |= 1L << binding.bindingIndex();
+            maxBindingIndex = Math.max(maxBindingIndex, binding.descriptorMaskIndex());
+            resourceMask |= 1L << binding.descriptorMaskIndex();
         }
         if (maxBindingIndex >= Long.SIZE) {
             throw new IllegalStateException("Pipeline " + info.getLocation() + " has binding index " + maxBindingIndex + ", limit is " + (Long.SIZE - 1));
@@ -148,6 +178,17 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
                 depthCompareOp,
                 depthWrite
         );
+        // Iris "undoes" Minecraft's reverse-z convention for shaderpacks in the
+        // GL backend (UndoReverseZThree) by flipping the compare op per draw.
+        // Metal bakes the compare op into a depth-stencil state, so keep a
+        // second, flipped state and select it while an Iris pack is in use.
+        this.reverseDepthStencilState = this.hasDepthStencilState
+                ? MetalNativeBridge.MTLDevice_makeDepthStencilState(
+                        device.metalDeviceHandle(),
+                        flipDepthCompare(depthCompareOp),
+                        depthWrite
+                )
+                : null;
 
         ColorTargetState[] colorTargets = info.getColorTargetStates();
         validateColorTargets(info.getLocation().toString(), colorTargets);
@@ -254,8 +295,8 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
         int maxBindingIndex = -1;
         long resourceMask = 0L;
         for (ResourceBinding binding : resources) {
-            maxBindingIndex = Math.max(maxBindingIndex, binding.bindingIndex());
-            resourceMask |= 1L << binding.bindingIndex();
+            maxBindingIndex = Math.max(maxBindingIndex, binding.descriptorMaskIndex());
+            resourceMask |= 1L << binding.descriptorMaskIndex();
         }
         if (maxBindingIndex >= Long.SIZE) {
             throw new IllegalStateException("Pipeline " + location + " has binding index " + maxBindingIndex + ", limit is " + (Long.SIZE - 1));
@@ -310,6 +351,17 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
                 depthCompareOp,
                 depthWrite
         );
+        // Iris "undoes" Minecraft's reverse-z convention for shaderpacks in the
+        // GL backend (UndoReverseZThree) by flipping the compare op per draw.
+        // Metal bakes the compare op into a depth-stencil state, so keep a
+        // second, flipped state and select it while an Iris pack is in use.
+        this.reverseDepthStencilState = this.hasDepthStencilState
+                ? MetalNativeBridge.MTLDevice_makeDepthStencilState(
+                        device.metalDeviceHandle(),
+                        flipDepthCompare(depthCompareOp),
+                        depthWrite
+                )
+                : null;
 
         validateColorTargets(location, colorTargets);
         this.colorFormats = colorFormats(colorTargets);
@@ -495,7 +547,27 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
     }
 
     MemorySegment getDepthStencilState() {
-        return this.depthStencilState;
+        if (!this.hasDepthStencilState
+                || this.reverseDepthStencilState == null
+                || !Iris.isPackInUseQuick()) {
+            return this.depthStencilState;
+        }
+        return this.reverseDepthStencilState;
+    }
+
+    /**
+     * Mirrors Iris's {@code UndoReverseZThree}: while a shaderpack is in use the
+     * engine's reverse-z compare ops must be flipped back to standard z
+     * (LESS_THAN &harr; GREATER_THAN, *_OR_EQUAL likewise; the rest unchanged).
+     */
+    private static MTLCompareFunction flipDepthCompare(final MTLCompareFunction op) {
+        return switch (op) {
+            case Less -> MTLCompareFunction.Greater;
+            case LessEqual -> MTLCompareFunction.GreaterEqual;
+            case Greater -> MTLCompareFunction.Less;
+            case GreaterEqual -> MTLCompareFunction.LessEqual;
+            case Never, Equal, NotEqual, Always -> op;
+        };
     }
 
     MemorySegment getNativePipeline(final MTLPixelFormat depthFormat, final MTLPixelFormat stencilFormat) {
@@ -535,6 +607,10 @@ final class MetalCompiledRenderPipeline implements CompiledRenderPipeline, AutoC
 
     int genericVertexBufferSlot() {
         return this.genericVertexBufferSlot;
+    }
+
+    List<MetalCrossShaderCompiler.GenericVertexInput> genericVertexInputs() {
+        return this.genericVertexInputs;
     }
 
     static int resolveGenericVertexBufferSlot(

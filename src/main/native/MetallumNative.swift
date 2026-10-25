@@ -676,6 +676,18 @@ public func metallum_create_semaphore() -> UnsafeMutableRawPointer? {
     retainedPointer(DispatchSemaphore(value: 0))
 }
 
+/// MTLCommandBuffer.GPUStartTime in seconds. Only meaningful once the buffer
+/// completed; callers pair it with GPUEndTime after their completion fence.
+@_cdecl("metallum_MTLCommandBuffer_gpuStartTime")
+public func metallum_MTLCommandBuffer_gpuStartTime(_ commandBuffer: MTLCommandBuffer) -> Double {
+    return commandBuffer.gpuStartTime
+}
+
+@_cdecl("metallum_MTLCommandBuffer_gpuEndTime")
+public func metallum_MTLCommandBuffer_gpuEndTime(_ commandBuffer: MTLCommandBuffer) -> Double {
+    return commandBuffer.gpuEndTime
+}
+
 @_cdecl("metallum_MTLCommandBuffer_commitWithSignal")
 public func metallum_MTLCommandBuffer_commitWithSignal(_ commandBuffer: MTLCommandBuffer, _ semaphore: DispatchSemaphore) {
     while semaphore.wait(timeout: .now()) == .success {}

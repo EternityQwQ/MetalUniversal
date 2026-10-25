@@ -15,6 +15,8 @@ import net.irisshaders.iris.gl.blending.AlphaTest;
 import net.irisshaders.iris.gl.blending.BlendMode;
 import net.irisshaders.iris.gl.blending.BlendModeFunction;
 import net.irisshaders.iris.gl.blending.BlendModeOverride;
+import net.irisshaders.iris.gl.state.ShaderAttributeInputs;
+import net.irisshaders.iris.shaderpack.loading.ProgramGroup;
 import net.irisshaders.iris.shaderpack.loading.ProgramId;
 import org.jspecify.annotations.Nullable;
 
@@ -39,14 +41,19 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
     private final int generation;
     private final IrisMetalWorldPrograms sources;
     private final GpuFormat[] targetFormats;
+    private final GpuFormat[] shadowTargetFormats;
     private final Map<SodiumKey, MetalCompiledRenderPipeline> sodiumPipelines = new HashMap<>();
+    private final Map<VanillaKey, MetalCompiledRenderPipeline> vanillaPipelines = new HashMap<>();
+    /** Probe dedup ({@code -Dmetallum.iris.debug.blendOverrides}): program+slot+target. */
+    private final Set<String> loggedBlendOverrides = new HashSet<>();
     private boolean closed;
 
     IrisMetalCompiledPrograms(
             final MetalDevice device,
             final int generation,
             final IrisMetalWorldPrograms sources,
-            final GpuFormat[] targetFormats
+            final GpuFormat[] targetFormats,
+            final GpuFormat[] shadowTargetFormats
     ) {
         this.device = Objects.requireNonNull(device, "device");
         if (generation <= 0) {
@@ -66,6 +73,15 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
         }
         for (int index = 0; index < this.targetFormats.length; index++) {
             Objects.requireNonNull(this.targetFormats[index], "targetFormats[" + index + "]");
+        }
+        this.shadowTargetFormats = Objects.requireNonNull(
+                shadowTargetFormats, "shadowTargetFormats"
+        ).clone();
+        if (this.shadowTargetFormats.length == 0) {
+            throw new IllegalArgumentException("Iris generation has no shadow-target formats");
+        }
+        for (int index = 0; index < this.shadowTargetFormats.length; index++) {
+            Objects.requireNonNull(this.shadowTargetFormats[index], "shadowTargetFormats[" + index + "]");
         }
     }
 
@@ -98,8 +114,29 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
         ));
     }
 
-    synchronized int cachedPipelineCount() {
-        return this.sodiumPipelines.size();
+    synchronized Optional<MetalCompiledRenderPipeline> vanilla(
+            final ProgramId requested,
+            final AlphaTest fallbackAlpha,
+            final boolean lines,
+            final boolean clouds,
+            final ShaderAttributeInputs inputs,
+            final RasterState state
+    ) {
+        ensureOpen();
+        Objects.requireNonNull(requested, "requested");
+        Objects.requireNonNull(fallbackAlpha, "fallbackAlpha");
+        Objects.requireNonNull(inputs, "inputs");
+        Objects.requireNonNull(state, "state");
+        Optional<IrisMetalGlslLinker.LinkedRasterProgram> linked =
+                this.sources.vanilla(requested, fallbackAlpha, lines, clouds, inputs);
+        if (linked.isEmpty()) {
+            return Optional.empty();
+        }
+        VanillaKey key = new VanillaKey(requested, fallbackAlpha, lines, clouds, inputs, state);
+        return Optional.of(this.vanillaPipelines.computeIfAbsent(
+                key,
+                ignored -> compile("vanilla_" + requested.getSourceName(), linked.orElseThrow(), state)
+        ));
     }
 
     private MetalCompiledRenderPipeline compile(
@@ -119,6 +156,8 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
         }
 
         MetalCompiledRenderPipeline compiled;
+        boolean glDepthEmulation = MetalDebugSwitches.SHADOW_DEPTH_FIX
+                && IrisMetalShadowDepthFix.appliesTo(program.program().resolution().requested());
         try {
             compiled = MetalCrossShaderCompiler.compileShaderpack(
                     this.device,
@@ -133,7 +172,8 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
                     state.primitiveTopology(),
                     state.vertexFormats().toArray(VertexFormat[]::new),
                     state.depthStencilState(),
-                    colorTargets
+                    colorTargets,
+                    glDepthEmulation
             );
         } catch (Exception exception) {
             throw new IllegalStateException(
@@ -168,6 +208,7 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
                             + ColorTargetState.MAX_COLOR_TARGETS
             );
         }
+        GpuFormat[] formats = programFormats(program);
 
         Optional<BlendFunction> globalBlend = state.blendFunction();
         BlendModeOverride globalOverride = program.program().directives()
@@ -184,11 +225,10 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
         ColorTargetState[] targets = new ColorTargetState[drawBuffers.length];
         for (int slot = 0; slot < drawBuffers.length; slot++) {
             int logicalTarget = drawBuffers[slot];
-            if (logicalTarget < 0 || logicalTarget >= this.targetFormats.length) {
+            if (logicalTarget < 0 || logicalTarget >= formats.length) {
                 throw new IllegalArgumentException(
                         "Iris program " + program.name() + " writes colortex" + logicalTarget
-                                + " but generation " + this.generation + " owns only 0.."
-                                + (this.targetFormats.length - 1)
+                                + " but this generation owns only 0.." + (formats.length - 1)
                 );
             }
             if (!written.add(logicalTarget)) {
@@ -204,15 +244,54 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
                     blend = override.blendMode() == null
                             ? Optional.empty()
                             : Optional.of(irisBlendFunction(override.blendMode()));
+                    if (MetalDebugSwitches.BLEND_OVERRIDES) {
+                        recordBlendOverride(program.name(), slot, logicalTarget, override.blendMode());
+                    }
                 }
             }
             targets[slot] = new ColorTargetState(
                     blend,
-                    this.targetFormats[logicalTarget],
+                    formats[logicalTarget],
                     state.writeMask()
             );
         }
         return targets;
+    }
+
+    /**
+     * Probe-only ({@code -Dmetallum.iris.debug.blendOverrides}): records each
+     * per-drawbuffer {@code blend.*} override folded into the Metal PSO, once
+     * per program+slot+target, so the colortex&rarr;DRAWBUFFERS mapping can be
+     * checked on device.
+     */
+    private void recordBlendOverride(
+            final String program,
+            final int slot,
+            final int logicalTarget,
+            final BlendMode blendMode
+    ) {
+        if (!this.loggedBlendOverrides.add(program + "/" + slot + "/" + logicalTarget)) {
+            return;
+        }
+        MetalProbeReport.record(
+                "blend.override program=" + program
+                        + " slot=" + slot
+                        + " target=colortex" + logicalTarget
+                        + " mode=" + (blendMode == null ? "off" : blendMode)
+        );
+    }
+
+    /**
+     * Shadow-group programs bind the shadowcolor attachments (pack-configured
+     * formats), not the main colortex targets; compiling them against the main
+     * table made {@code MetalRenderPass.validateAttachmentSignature} reject the
+     * shadow pass. Everything else keeps the main table.
+     */
+    private GpuFormat[] programFormats(final IrisMetalGlslLinker.LinkedRasterProgram program) {
+        ProgramId requested = program.program().resolution().requested();
+        return requested != null && requested.getGroup() == ProgramGroup.Shadow
+                ? this.shadowTargetFormats
+                : this.targetFormats;
     }
 
     private static void validateReflectedResources(
@@ -303,6 +382,8 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
         this.device.waitForSubmittedGpuWork();
         this.sodiumPipelines.values().forEach(MetalCompiledRenderPipeline::close);
         this.sodiumPipelines.clear();
+        this.vanillaPipelines.values().forEach(MetalCompiledRenderPipeline::close);
+        this.vanillaPipelines.clear();
     }
 
     record RasterState(
@@ -350,5 +431,15 @@ final class IrisMetalCompiledPrograms implements AutoCloseable {
     }
 
     private record SodiumKey(ProgramId requested, AlphaTest fallbackAlpha, RasterState state) {
+    }
+
+    private record VanillaKey(
+            ProgramId requested,
+            AlphaTest fallbackAlpha,
+            boolean lines,
+            boolean clouds,
+            ShaderAttributeInputs inputs,
+            RasterState state
+    ) {
     }
 }

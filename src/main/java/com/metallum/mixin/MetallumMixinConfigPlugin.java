@@ -17,6 +17,22 @@ public final class MetallumMixinConfigPlugin implements IMixinConfigPlugin {
     private static final String PREFERRED_GRAPHICS_BACKEND_OPTION = "preferredGraphicsBackend";
     private static final String DEFAULT_GRAPHICS_BACKEND = "\"default\"";
 
+    /**
+     * Bisection probe / opt-in performance mixins that must apply whenever the
+     * mod runs on macOS, regardless of the {@code preferredGraphicsBackend}
+     * value in options.txt. They are fully inert at runtime while
+     * {@code MetalDebugSwitches} is unset, so applying them unconditionally
+     * changes no behavior.
+     */
+    private static final Set<String> ALWAYS_APPLY_RENDER_PROBES = Set.of(
+            "com.metallum.mixin.render.NoVanillaSkyMixin",
+            "com.metallum.mixin.render.NoVanillaCloudsMixin",
+            "com.metallum.mixin.render.NoVanillaCloudRendererMixin",
+            "com.metallum.mixin.render.ForceCloudStatusOffMixin",
+            "com.metallum.mixin.render.MetalProbeReportMixin",
+            "com.metallum.mixin.render.MetalRenderScaleMixin"
+    );
+
     private boolean isMacOs;
     private boolean isDefaultGraphicsApi;
 
@@ -36,6 +52,9 @@ public final class MetallumMixinConfigPlugin implements IMixinConfigPlugin {
     public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
         if (!this.isMacOs) {
             return false;
+        }
+        if (ALWAYS_APPLY_RENDER_PROBES.contains(mixinClassName)) {
+            return true;
         }
         if (mixinClassName.contains(".mixin.sodium.")) {
             return FabricLoader.getInstance().isModLoaded("sodium");

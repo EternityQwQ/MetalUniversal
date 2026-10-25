@@ -1,5 +1,6 @@
 package com.metallum.mixin.iris;
 
+import com.metallum.client.metal.render.IrisMetalWorldBridge;
 import com.metallum.client.metal.render.MetalActive;
 import com.metallum.client.metal.render.MetalIrisProgram;
 import com.metallum.client.metal.render.MetalIrisProgramsToClear;
@@ -24,6 +25,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * {@link MetalIrisProgramsToClear#PROGRAMS} static holder, shared with
  * {@link MetalIrisPipelineMixin} to avoid cross-mixin field access.
  *
+ * <p>Also ends any active {@link IrisMetalWorldBridge} world pass at pass
+ * submit, so sampler fallback for the next pass starts from a clean slate.
+ *
  * <p><b>Non-Metal no-op.</b> Gated by {@link MetalActive#isMetalActive()}.
  *
  * <p><b>Target visibility.</b> {@code MetalCommandEncoder} is package-private,
@@ -38,6 +42,7 @@ public class MetalIrisClearMixin {
         if (!MetalActive.isMetalActive()) {
             return;
         }
+        IrisMetalWorldBridge.endPass();
         if (!MetalIrisProgramsToClear.PROGRAMS.isEmpty()) {
             MetalIrisProgramsToClear.PROGRAMS.forEach(MetalIrisProgram::iris$clearState);
             MetalIrisProgramsToClear.PROGRAMS.clear();

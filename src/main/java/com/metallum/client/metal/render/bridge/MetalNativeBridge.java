@@ -19,7 +19,18 @@ import java.nio.file.StandardCopyOption;
 public final class MetalNativeBridge {
     private static final String MACOS_RESOURCE_PATH = "/natives/macos/libmetallum.dylib";
     private static final String IOS_RESOURCE_PATH = "/natives/ios/libmetallum.dylib";
-    private static final String IOS_GLSLANG_RESOURCE_PATH = "/natives/ios/libglslang.dylib";
+    /**
+     * Bundled iOS glslang dylibs, dependencies first and the primary dylib
+     * last (mirrors the macOS resource list in {@code GlslangBridge}).
+     * {@code libglslang-default-resource-limits.dylib} exports
+     * {@code glslang_default_resource}, which the primary dylib does not.
+     */
+    private static final String IOS_GLSLANG_PRIMARY_RESOURCE = "/natives/ios/libglslang.dylib";
+    private static final String[] IOS_GLSLANG_RESOURCES = {
+            "/natives/ios/libSPIRV.dylib",
+            "/natives/ios/libglslang-default-resource-limits.dylib",
+            IOS_GLSLANG_PRIMARY_RESOURCE,
+    };
     private static final ValueLayout.OfInt INT = ValueLayout.JAVA_INT;
     private static final ValueLayout.OfLong LONG = ValueLayout.JAVA_LONG;
     private static final ValueLayout.OfFloat FLOAT = ValueLayout.JAVA_FLOAT;
@@ -92,8 +103,8 @@ public final class MetalNativeBridge {
     /**
      * iOS-only backstop for the glslang native library, mirroring
      * {@link #ensureSpvcLibraryConfigured()}. On iOS, extracts the bundled
-     * {@code libglslang.dylib} from {@code /natives/ios/} into a writable
-     * directory and {@code System.load}s it (via Amethyst's hooked
+     * glslang dylibs from {@code /natives/ios/} into a writable
+     * directory and {@code System.load}s them (via Amethyst's hooked
      * {@code dlopen}) so that {@link GlslangBridge}'s
      * {@link SymbolLookup#loaderLookup()} can find the {@code glslang_*}
      * symbols. On macOS this is a no-op: {@code GlslangBridge} performs its own
@@ -168,8 +179,9 @@ public final class MetalNativeBridge {
      * {@link SymbolLookup#loaderLookup()}. Mirrors
      * {@link #ensureSpvcLibraryConfigured()}: it is a no-op on non-iOS (on
      * macOS, {@code GlslangBridge} extracts and loads the macOS dylib(s)
-     * itself), and on iOS extracts {@code /natives/ios/libglslang.dylib} to a
-     * writable directory and {@code System.load}s it (via Amethyst's hooked
+     * itself), and on iOS extracts the bundled glslang dylibs (including
+     * {@code libglslang-default-resource-limits.dylib}) to a writable
+     * directory and {@code System.load}s them (via Amethyst's hooked
      * {@code dlopen}). Unlike the Spvc path there is no LWJGL
      * {@code Configuration} to set, because glslang is accessed purely through
      * FFM rather than through LWJGL's {@code Spvc} class.
@@ -197,41 +209,85 @@ public final class MetalNativeBridge {
     }
 
     /**
-     * 从 jar 中抽取 {@code /natives/ios/libglslang.dylib} 到可写目录并
+     * 从 jar 中抽取 {@code /natives/ios/} 下的全部 glslang dylib（依赖在前、
+     * 主库 {@code libglslang.dylib} 在后）到可写目录并逐个
      * {@code System.load} 加载（与 {@link #configureBundledSpvcLibrary} 相同的
      * 可写目录迭代策略），使 {@link GlslangBridge} 的
-     * {@link SymbolLookup#loaderLookup()} 能找到 {@code glslang_*} 符号。
+     * {@link SymbolLookup#loaderLookup()} 能找到 {@code glslang_*} 与
+     * {@code glslang_default_resource} 符号。
+     *
+     * <p>与 macOS 的 {@code GlslangBridge} 加载器一致：缺失的兄弟库直接跳过，
+     * 只有主库是必须成功加载的。此前仅加载主库，导致 iOS 上
+     * {@code glslang_default_resource}（位于
+     * {@code libglslang-default-resource-limits.dylib}）解析失败、启用光影时
+     * {@code GlslangBridge} 静态初始化崩溃。
      */
     private static void configureBundledGlslangLibrary() throws IOException {
-        try (InputStream stream = MetalNativeBridge.class.getResourceAsStream(IOS_GLSLANG_RESOURCE_PATH)) {
-            if (stream == null) {
-                return;
-            }
-            Path tempLib = null;
-            IOException lastError = null;
-            for (String dirProperty : new String[]{"pojav.launcher.home", "POJAV_HOME", "user.home", "java.io.tmpdir"}) {
-                String dir = System.getProperty(dirProperty);
-                if (dir == null || dir.isBlank()) continue;
-                Path dirPath = Path.of(dir);
-                if (!Files.isDirectory(dirPath)) continue;
-                try {
-                    tempLib = dirPath.resolve("libglslang_metallum.dylib");
-                    Files.copy(stream, tempLib, StandardCopyOption.REPLACE_EXISTING);
-                    break;
-                } catch (IOException e) {
-                    lastError = e;
-                    tempLib = null;
+        boolean primaryLoaded = false;
+        for (String resourcePath : IOS_GLSLANG_RESOURCES) {
+            boolean primary = resourcePath.equals(IOS_GLSLANG_PRIMARY_RESOURCE);
+            Path extracted = extractBundledNativeLibrary(
+                    resourcePath, resourcePath.substring(resourcePath.lastIndexOf('/') + 1));
+            if (extracted == null) {
+                if (primary) {
+                    throw new IOException("Missing native library resource: " + resourcePath);
                 }
+                continue; // sibling not bundled in this build
             }
-            if (tempLib == null) {
-                if (lastError != null) throw lastError;
-                throw new IOException("No writable directory available for libglslang.dylib extraction");
+            try {
+                // System.load via Amethyst's hooked dlopen so the symbols are
+                // available to SymbolLookup.loaderLookup() used by GlslangBridge.
+                System.load(extracted.toString());
+            } catch (UnsatisfiedLinkError e) {
+                if (primary) {
+                    throw e;
+                }
+                // A sibling may fail if its own deps are unsatisfiable; only the
+                // primary dylib is mandatory (mirrors GlslangBridge's macOS path).
             }
-            tempLib.toFile().deleteOnExit();
-            // System.load via Amethyst's hooked dlopen so the glslang_* symbols
-            // are available to SymbolLookup.loaderLookup() used by GlslangBridge.
-            System.load(tempLib.toString());
+            if (primary) {
+                primaryLoaded = true;
+            }
         }
+        if (!primaryLoaded) {
+            throw new IOException("Could not load " + IOS_GLSLANG_PRIMARY_RESOURCE);
+        }
+    }
+
+    /**
+     * 将 {@code resourcePath} 抽取为带 {@code _metallum.dylib} 后缀的可写文件，
+     * 依次尝试 {@code pojav.launcher.home} / {@code POJAV_HOME} / {@code user.home}
+     * / {@code java.io.tmpdir}；资源不存在时返回 {@code null}。
+     */
+    private static Path extractBundledNativeLibrary(String resourcePath, String fileName) throws IOException {
+        byte[] bytes;
+        try (InputStream stream = MetalNativeBridge.class.getResourceAsStream(resourcePath)) {
+            if (stream == null) {
+                return null;
+            }
+            bytes = stream.readAllBytes();
+        }
+        String stem = fileName.endsWith(".dylib")
+                ? fileName.substring(0, fileName.length() - ".dylib".length())
+                : fileName;
+        String targetName = stem + "_metallum.dylib";
+        IOException lastError = null;
+        for (String dirProperty : new String[]{"pojav.launcher.home", "POJAV_HOME", "user.home", "java.io.tmpdir"}) {
+            String dir = System.getProperty(dirProperty);
+            if (dir == null || dir.isBlank()) continue;
+            Path dirPath = Path.of(dir);
+            if (!Files.isDirectory(dirPath)) continue;
+            try {
+                Path target = dirPath.resolve(targetName);
+                Files.write(target, bytes);
+                target.toFile().deleteOnExit();
+                return target;
+            } catch (IOException e) {
+                lastError = e;
+            }
+        }
+        if (lastError != null) throw lastError;
+        throw new IOException("No writable directory available for " + resourcePath);
     }
 
     static {
@@ -251,12 +307,11 @@ public final class MetalNativeBridge {
             MTLDeviceMaxMemoryAllocationSize = downcall(lookup, "metallum_MTLDevice_maxMemoryAllocationSize", FunctionDescriptor.of(LONG, ValueLayout.ADDRESS));
             MTLDeviceMakeCommandQueue = downcall(lookup, "metallum_MTLDevice_makeCommandQueue", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
             MTLCommandQueueMakeCommandBuffer = downcall(lookup, "metallum_MTLCommandQueue_makeCommandBuffer", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
-            MTLCommandBufferCommit = downcall(lookup, "metallum_MTLCommandBuffer_commit", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
             createSemaphore = downcall(lookup, "metallum_create_semaphore", FunctionDescriptor.of(ValueLayout.ADDRESS));
             MTLCommandBufferCommitWithSignal = downcall(lookup, "metallum_MTLCommandBuffer_commitWithSignal", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+            MTLCommandBufferGpuStartTime = optionalDowncall(lookup, "metallum_MTLCommandBuffer_gpuStartTime", FunctionDescriptor.of(DOUBLE, ValueLayout.ADDRESS));
+            MTLCommandBufferGpuEndTime = optionalDowncall(lookup, "metallum_MTLCommandBuffer_gpuEndTime", FunctionDescriptor.of(DOUBLE, ValueLayout.ADDRESS));
             semaphoreWait = downcallWithoutCritical(lookup, "metallum_semaphore_wait", FunctionDescriptor.of(INT, ValueLayout.ADDRESS, LONG));
-            MTLCommandBufferIsCompleted = downcall(lookup, "metallum_MTLCommandBuffer_isCompleted", FunctionDescriptor.of(INT, ValueLayout.ADDRESS));
-            MTLCommandBufferWaitUntilCompleted = downcallWithoutCritical(lookup, "metallum_MTLCommandBuffer_waitUntilCompleted", FunctionDescriptor.of(INT, ValueLayout.ADDRESS, LONG));
             MTLCommandBufferPushDebugGroup = downcall(lookup, "metallum_MTLCommandBuffer_pushDebugGroup", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
             MTLCommandBufferPopDebugGroup = downcall(lookup, "metallum_MTLCommandBuffer_popDebugGroup", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
             MTLCommandBufferMakeBlitCommandEncoder = downcall(lookup, "metallum_MTLCommandBuffer_makeBlitCommandEncoder", FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -338,28 +393,9 @@ public final class MetalNativeBridge {
             MTLRenderCommandEncoderSetCullMode = downcall(lookup, "metallum_MTLRenderCommandEncoder_setCullMode", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, LONG));
             MTLRenderCommandEncoderSetTriangleFillMode = downcall(lookup, "metallum_MTLRenderCommandEncoder_setTriangleFillMode", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, INT));
             MTLRenderCommandEncoderSetBuffer = downcall(lookup, "metallum_MTLRenderCommandEncoder_setBuffer", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS, LONG, LONG, INT));
-            MTLRenderCommandEncoderSetBufferOffset = downcall(lookup, "metallum_MTLRenderCommandEncoder_setBufferOffset", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, LONG, LONG, INT));
             MTLRenderCommandEncoderSetTexture = downcall(lookup, "metallum_MTLRenderCommandEncoder_setTexture", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS, LONG, INT));
             MTLRenderCommandEncoderSetTextureAndSampler = downcall(lookup, "metallum_MTLRenderCommandEncoder_setTextureAndSampler", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, LONG, INT));
             MTLRenderCommandEncoderSetScissorRect = downcall(lookup, "metallum_MTLRenderCommandEncoder_setScissorRect", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, LONG, LONG, LONG, LONG));
-            MTLRenderCommandEncoderClearDraw = downcall(
-                    lookup,
-                    "metallum_MTLRenderCommandEncoder_clearDraw",
-                    FunctionDescriptor.ofVoid(
-                            ValueLayout.ADDRESS,
-                            ValueLayout.ADDRESS,
-                            ValueLayout.ADDRESS,
-                            DOUBLE,
-                            DOUBLE,
-                            INT,
-                            FLOAT,
-                            FLOAT,
-                            FLOAT,
-                            FLOAT,
-                            INT,
-                            DOUBLE
-                    )
-            );
             MTLRenderCommandEncoderDrawPrimitives = downcall(lookup, "metallum_MTLRenderCommandEncoder_drawPrimitives", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, LONG, LONG, LONG, LONG, LONG));
             MTLRenderCommandEncoderDrawIndexedPrimitives = downcall(
                     lookup,
@@ -747,12 +783,11 @@ public final class MetalNativeBridge {
     private static final MethodHandle MTLDeviceMaxMemoryAllocationSize;
     private static final MethodHandle MTLDeviceMakeCommandQueue;
     private static final MethodHandle MTLCommandQueueMakeCommandBuffer;
-    private static final MethodHandle MTLCommandBufferCommit;
     private static final MethodHandle createSemaphore;
     private static final MethodHandle MTLCommandBufferCommitWithSignal;
+    private static final @Nullable MethodHandle MTLCommandBufferGpuStartTime;
+    private static final @Nullable MethodHandle MTLCommandBufferGpuEndTime;
     private static final MethodHandle semaphoreWait;
-    private static final MethodHandle MTLCommandBufferIsCompleted;
-    private static final MethodHandle MTLCommandBufferWaitUntilCompleted;
     private static final MethodHandle MTLCommandBufferPushDebugGroup;
     private static final MethodHandle MTLCommandBufferPopDebugGroup;
     private static final MethodHandle MTLCommandBufferMakeBlitCommandEncoder;
@@ -773,11 +808,9 @@ public final class MetalNativeBridge {
     private static final MethodHandle MTLRenderCommandEncoderSetCullMode;
     private static final MethodHandle MTLRenderCommandEncoderSetTriangleFillMode;
     private static final MethodHandle MTLRenderCommandEncoderSetBuffer;
-    private static final MethodHandle MTLRenderCommandEncoderSetBufferOffset;
     private static final MethodHandle MTLRenderCommandEncoderSetTexture;
     private static final MethodHandle MTLRenderCommandEncoderSetTextureAndSampler;
     private static final MethodHandle MTLRenderCommandEncoderSetScissorRect;
-    private static final MethodHandle MTLRenderCommandEncoderClearDraw;
     private static final MethodHandle MTLRenderCommandEncoderDrawPrimitives;
     private static final MethodHandle MTLRenderCommandEncoderDrawIndexedPrimitives;
     private static final MethodHandle MTLRenderCommandEncoderMultiDrawIndexed;
@@ -979,14 +1012,6 @@ public final class MetalNativeBridge {
         }
     }
 
-    public static void MTLCommandBuffer_commit(final MemorySegment commandBuffer) {
-        try {
-            MTLCommandBufferCommit.invokeExact(segment(commandBuffer));
-        } catch (Throwable throwable) {
-            throw bridgeFailure("metallum_MTLCommandBuffer_commit", throwable);
-        }
-    }
-
     public static MemorySegment metallum_create_semaphore() {
         try {
             return (MemorySegment) createSemaphore.invokeExact();
@@ -1003,27 +1028,41 @@ public final class MetalNativeBridge {
         }
     }
 
+    /**
+     * Metal's {@code GPUStartTime} (seconds) for a completed command buffer,
+     * or NaN when the running native library predates the perf downcall.
+     */
+    public static double MTLCommandBuffer_gpuStartTime(final MemorySegment commandBuffer) {
+        if (MTLCommandBufferGpuStartTime == null) {
+            return Double.NaN;
+        }
+        try {
+            return (double) MTLCommandBufferGpuStartTime.invokeExact(segment(commandBuffer));
+        } catch (Throwable throwable) {
+            throw bridgeFailure("metallum_MTLCommandBuffer_gpuStartTime", throwable);
+        }
+    }
+
+    /**
+     * Metal's {@code GPUEndTime} (seconds) for a completed command buffer, or
+     * NaN when the running native library predates the perf downcall.
+     */
+    public static double MTLCommandBuffer_gpuEndTime(final MemorySegment commandBuffer) {
+        if (MTLCommandBufferGpuEndTime == null) {
+            return Double.NaN;
+        }
+        try {
+            return (double) MTLCommandBufferGpuEndTime.invokeExact(segment(commandBuffer));
+        } catch (Throwable throwable) {
+            throw bridgeFailure("metallum_MTLCommandBuffer_gpuEndTime", throwable);
+        }
+    }
+
     public static int metallum_semaphore_wait(final MemorySegment semaphore, final long timeoutMs) {
         try {
             return (int) semaphoreWait.invokeExact(segment(semaphore), timeoutMs);
         } catch (Throwable throwable) {
             throw bridgeFailure("metallum_semaphore_wait", throwable);
-        }
-    }
-
-    public static int MTLCommandBuffer_isCompleted(final MemorySegment commandBuffer) {
-        try {
-            return (int) MTLCommandBufferIsCompleted.invokeExact(segment(commandBuffer));
-        } catch (Throwable throwable) {
-            throw bridgeFailure("metallum_MTLCommandBuffer_isCompleted", throwable);
-        }
-    }
-
-    public static int MTLCommandBuffer_waitUntilCompleted(final MemorySegment commandBuffer, final long timeoutMs) {
-        try {
-            return (int) MTLCommandBufferWaitUntilCompleted.invokeExact(segment(commandBuffer), timeoutMs);
-        } catch (Throwable throwable) {
-            throw bridgeFailure("metallum_MTLCommandBuffer_waitUntilCompleted", throwable);
         }
     }
 
@@ -1471,40 +1510,6 @@ public final class MetalNativeBridge {
         }
     }
 
-    public static void MTLRenderCommandEncoder_clearDraw(
-            final MemorySegment encoder,
-            final MemorySegment colorTexture,
-            final MemorySegment depthTexture,
-            final double viewportWidth,
-            final double viewportHeight,
-            final int clearColorEnabled,
-            final float clearColorRed,
-            final float clearColorGreen,
-            final float clearColorBlue,
-            final float clearColorAlpha,
-            final int clearDepthEnabled,
-            final double clearDepth
-    ) {
-        try {
-            MTLRenderCommandEncoderClearDraw.invokeExact(
-                    segment(encoder),
-                    segment(colorTexture),
-                    segment(depthTexture),
-                    viewportWidth,
-                    viewportHeight,
-                    clearColorEnabled,
-                    clearColorRed,
-                    clearColorGreen,
-                    clearColorBlue,
-                    clearColorAlpha,
-                    clearDepthEnabled,
-                    clearDepth
-            );
-        } catch (Throwable throwable) {
-            throw bridgeFailure("metallum_MTLRenderCommandEncoder_clearDraw", throwable);
-        }
-    }
-
     public static void MTLRenderCommandEncoder_setRenderPipelineState(final MemorySegment encoder, final MemorySegment pipeline) {
         try {
             MTLRenderCommandEncoderSetRenderPipelineState.invokeExact(segment(encoder), segment(pipeline));
@@ -1558,14 +1563,6 @@ public final class MetalNativeBridge {
             MTLRenderCommandEncoderSetBuffer.invokeExact(segment(encoder), segment(buffer), offset, index, stageMask);
         } catch (Throwable throwable) {
             throw bridgeFailure("metallum_MTLRenderCommandEncoder_setBuffer", throwable);
-        }
-    }
-
-    public static void MTLRenderCommandEncoder_setBufferOffset(final MemorySegment encoder, final long offset, final long index, final int stageMask) {
-        try {
-            MTLRenderCommandEncoderSetBufferOffset.invokeExact(segment(encoder), offset, index, stageMask);
-        } catch (Throwable throwable) {
-            throw bridgeFailure("metallum_MTLRenderCommandEncoder_setBufferOffset", throwable);
         }
     }
 

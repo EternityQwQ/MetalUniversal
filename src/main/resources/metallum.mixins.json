@@ -7,6 +7,12 @@
   ],
   "client": [
     "render.PreferredGraphicsApiMixin",
+    "render.NoVanillaSkyMixin",
+    "render.NoVanillaCloudsMixin",
+    "render.NoVanillaCloudRendererMixin",
+    "render.ForceCloudStatusOffMixin",
+    "render.MetalProbeReportMixin",
+    "render.MetalRenderScaleMixin",
     "sodium.DrawBackendMixin",
     "sodium.DrawContextMixin",
     "sodium.SodiumPreferredGraphicsApiMixin",
@@ -22,11 +28,17 @@
     "iris.ShaderMapMixin",
     "iris.IrisRenderSystemMixin",
     "iris.IrisRenderPassMixin",
+    "iris.PreparedRenderTypeMixin",
+    "iris.QuadParticleFeatureRendererMixin",
+    "iris.WeatherEffectRendererMixin",
+    "iris.SkyRendererMixin",
+    "iris.HorizonRendererMixin",
     "iris.GlStateManagerMixin",
     "iris.GLDebugMixin",
     "iris.IrisMetalValidationMixin",
     "iris.MetalIrisPipelineMixin",
-    "iris.MetalIrisClearMixin"
+    "iris.MetalIrisClearMixin",
+    "iris.ProjectionDepthRemapMixin"
   ],
   "injectors": {
     "defaultRequire": 1

@@ -41,16 +41,43 @@ import java.util.regex.Pattern;
 @Environment(EnvType.CLIENT)
 public final class MetalCrossShaderCompiler {
     private static final String IRIS_SSBO_DESCRIPTOR_PREFIX = "iris_ssbo/";
+    /** Prefix Iris' vanilla-core transformer adds to physical vertex input names. */
+    private static final String IRIS_INPUT_ALIAS_PREFIX = "iris_";
     private static final Set<String> BUILT_IN_UNIFORMS = Set.of("Projection", "Lighting", "Fog", "Globals");
     /** Sodium's stable per-region time buffer is a texel buffer, not a 2D sampler. */
     private static final GpuFormat SODIUM_SECTION_TIME_FORMAT = GpuFormat.R32_SINT;
     private static final int MSL_VERSION_4_0 = 0x040000;
+    /**
+     * Metal's per-stage hardware limit for sampler slots: MSL rejects
+     * {@code [[sampler(N)]]} for any {@code N > 15}. Shaderpack programs can
+     * declare far more combined image samplers than that (Complementary
+     * Reimagined's deferred1 declares 23), so the shaderpack MSL path remaps
+     * the <i>active</i> sampled images of each stage onto a compact
+     * {@code 0..n-1} range. Canonical definition lives in the native-free
+     * {@link ShaderpackSamplerIndexPlan}; this alias keeps the limit visible at
+     * the call sites.
+     */
+    static final int MAX_METAL_SAMPLERS_PER_STAGE = ShaderpackSamplerIndexPlan.MAX_METAL_SAMPLERS_PER_STAGE;
     private static final Pattern VERTEX_ENTRY_PATTERN = Pattern.compile("\\bvertex\\s+\\w+\\s+(\\w+)\\s*\\(");
     private static final Pattern FRAGMENT_ENTRY_PATTERN = Pattern.compile("\\bfragment\\s+\\w+\\s+(\\w+)\\s*\\(");
     private static final Pattern EXPLICIT_FRAGMENT_OUTPUT_PATTERN = Pattern.compile(
             "\\blayout\\s*\\(\\s*location\\s*=\\s*(\\d+)[^)]*\\)\\s*"
                     + "(?:(?:flat|smooth|noperspective|centroid|sample|invariant|precise)\\s+)*"
                     + "out\\s+(?:lowp\\s+|mediump\\s+|highp\\s+)?\\w+\\s+(\\w+)\\b"
+    );
+    /**
+     * MSL sampled-texture argument attributes. With
+     * {@code MSL_ENABLE_DECORATION_BINDING}, SPIRV-Cross splits a combined
+     * image sampler into a {@code texture2d} argument ({@code [[texture(N)]]})
+     * and a separate {@code sampler} argument ({@code [[sampler(N)]]}), so the
+     * emitted indices are the ground truth for the H1 binding-mismatch
+     * instrumentation. Captures {@code (argumentName, index)}.
+     */
+    private static final Pattern MSL_TEXTURE_ATTRIBUTE = Pattern.compile(
+            "([A-Za-z_]\\w*)\\s*(?:\\[\\d+\\])?\\s*\\[\\[texture\\((\\d+)\\)\\]\\]"
+    );
+    private static final Pattern MSL_SAMPLER_ATTRIBUTE = Pattern.compile(
+            "([A-Za-z_]\\w*)\\s*(?:\\[\\d+\\])?\\s*\\[\\[sampler\\((\\d+)\\)\\]\\]"
     );
 
     /**
@@ -169,7 +196,10 @@ public final class MetalCrossShaderCompiler {
             String vertexEntryPoint = extractEntryPoint(vertexMsl.source(), VERTEX_ENTRY_PATTERN, "main0");
             String fragmentEntryPoint = extractEntryPoint(fragmentMsl.source(), FRAGMENT_ENTRY_PATTERN, "main0");
             List<MetalCompiledRenderPipeline.ResourceBinding> resources = buildResourceBindings(
-                    layoutEntries, storageResources, vertexMsl, fragmentMsl
+                    layoutEntries, storageResources, vertexMsl, fragmentMsl, false
+            );
+            dumpSampledImageBindings(
+                    pipeline.getLocation().toString(), resources, vertexMsl, fragmentMsl
             );
             return new MetalCompiledRenderPipeline(
                     device,
@@ -223,6 +253,10 @@ public final class MetalCrossShaderCompiler {
      * @param depthStencilState        depth/stencil state (nullable).
      * @param colorTargets             compact physical color-target states in
      *                                 the same order as Iris DRAWBUFFERS.
+     * @param glDepthEmulation         whether to wrap the vertex stage with the
+     *                                 GL NDC&rarr;depth viewport transform for
+     *                                 shadow caster programs (see
+     *                                 {@link IrisMetalShadowDepthFix}).
      * @return the compiled Metal render pipeline.
      * @throws ShaderCompileException if GLSL&#8594;SPIR-V or SPIR-V&#8594;MSL fails.
      */
@@ -239,16 +273,21 @@ public final class MetalCrossShaderCompiler {
             final PrimitiveTopology primitiveTopology,
             final VertexFormat[] vertexFormatBindings,
             final DepthStencilState depthStencilState,
-            final ColorTargetState[] colorTargets
+            final ColorTargetState[] colorTargets,
+            final boolean glDepthEmulation
     ) throws ShaderCompileException {
         final int[] vertexSpvWords;
         final int[] fragmentSpvWords;
+        final String vertexSource = IrisMetalShadowDepthFix.vertexSource(vertexGlsl, glDepthEmulation);
+        final String vertexDefines = IrisMetalShadowDepthFix.vertexDefines(defines, glDepthEmulation);
         try {
-            vertexSpvWords = GlslangBridge.compileGlslToSpv(GlslangBridge.Stage.VERTEX, vertexGlsl, defines);
+            vertexSpvWords = GlslangBridge.compileGlslToSpv(GlslangBridge.Stage.VERTEX, vertexSource, vertexDefines);
         } catch (GlslangBridge.ShaderCompileException e) {
             throw wrapGlslangError("Failed to compile shaderpack vertex shader '" + name + "'", e);
         }
         try {
+            // The wrapper must never leak into the fragment stage: it uses the
+            // shared define only for the vertex compile above.
             fragmentSpvWords = GlslangBridge.compileGlslToSpv(GlslangBridge.Stage.FRAGMENT, fragmentGlsl, defines);
         } catch (GlslangBridge.ShaderCompileException e) {
             throw wrapGlslangError("Failed to compile shaderpack fragment shader '" + name + "'", e);
@@ -263,6 +302,7 @@ public final class MetalCrossShaderCompiler {
         final ByteBuffer fragmentSpirv = spirvWordsToByteBuffer(fragmentSpvWords);
         final ShaderpackReflection vertexReflection = reflectShaderpackResources(vertexSpirv);
         final ShaderpackReflection fragmentReflection = reflectShaderpackResources(fragmentSpirv);
+        rejectSeparateSamplers(name, vertexReflection, fragmentReflection);
         final List<VulkanBindGroupLayout.Entry> reflectedEntries = buildShaderpackBindGroupEntries(vertexReflection, fragmentReflection);
         final List<RasterStorageResource> storageResources = rebindRasterStorageResources(
                 vertexSpirv, fragmentSpirv, reflectedEntries.size()
@@ -273,19 +313,22 @@ public final class MetalCrossShaderCompiler {
         final int pushConstantBinding = reflectedEntries.size() + storageResources.size();
         final MslShader vertexMsl = spirvToMsl(
                 vertexSpirv, pushConstantBinding,
-                vertexAttributeFormats, enablePointSize, Map.of(), resourceBindings, physicalInputNames
+                vertexAttributeFormats, enablePointSize, Map.of(), resourceBindings, physicalInputNames,
+                name + " vertex"
         );
         final MslShader fragmentMsl = spirvToMsl(
                 fragmentSpirv, pushConstantBinding,
-                Map.of(), true, Map.of(), resourceBindings
+                Map.of(), true, Map.of(), resourceBindings, null,
+                name + " fragment"
         );
         validateFragmentOutputSignature(name, colorTargets, fragmentMsl.stageOutputLocations());
 
         final String vertexEntryPoint = extractEntryPoint(vertexMsl.source(), VERTEX_ENTRY_PATTERN, "main0");
         final String fragmentEntryPoint = extractEntryPoint(fragmentMsl.source(), FRAGMENT_ENTRY_PATTERN, "main0");
         final List<MetalCompiledRenderPipeline.ResourceBinding> resources = buildResourceBindings(
-                reflectedEntries, storageResources, vertexMsl, fragmentMsl
+                reflectedEntries, storageResources, vertexMsl, fragmentMsl, true
         );
+        dumpSampledImageBindings(name, resources, vertexMsl, fragmentMsl);
 
         return new MetalCompiledRenderPipeline(
                 device,
@@ -306,24 +349,13 @@ public final class MetalCrossShaderCompiler {
     }
 
     /**
-     * Cache of shaderpack programs that have been successfully dry-compiled to
-     * MSL, keyed by program name. Populated by
-     * {@link #tryCompileShaderpackMsl} and intended for retrieval by the
-     * (forthcoming) full Iris&rarr;Metal pipeline-binding step, which needs the
-     * compiled MSL sources and entry points to construct a
-     * {@link MetalCompiledRenderPipeline}.
-     */
-    private static final Map<String, ShaderpackMslResult> SHADERPACK_MSL_CACHE = new ConcurrentHashMap<>();
-
-    /**
      * Dry-compile an Iris shaderpack program through the full
      * glslang&#8594;SPIRV-Cross&#8594;MSL pipeline WITHOUT creating a
      * {@link MetalCompiledRenderPipeline} or requiring a {@link MetalDevice}.
      *
      * <p>This entry point validates that a shaderpack program's GLSL (already
      * patched and {@code #include}-expanded by Iris's {@code TransformPatcher})
-     * can be cross-compiled to MSL, and caches the resulting MSL sources for
-     * the subsequent pipeline-binding step. It is the natural progression from
+     * can be cross-compiled to MSL. It is the natural progression from
      * {@link #compileShaderpack}: same GLSL&#8594;MSL pipeline, but decoupled
      * from {@code MetalDevice} so it can be invoked from Iris
      * {@code ShaderCreator.link} interception before a Metal pipeline state
@@ -349,11 +381,7 @@ public final class MetalCrossShaderCompiler {
      *       dry-compile (the actual topology is not known here).</li>
      * </ul>
      *
-     * <p>On success the result is cached in {@link #SHADERPACK_MSL_CACHE} under
-     * {@code name} (overwriting any prior entry) so the pipeline-binding step
-     * can retrieve it without recompiling.
-     *
-     * @param name             logical program name (also the cache key).
+     * @param name             logical program name.
      * @param vertexGlsl       vertex GLSL source (must be non-null and declare
      *                         its own {@code #version}).
      * @param geometryGlsl     geometry GLSL source (nullable; ignored with a
@@ -366,7 +394,7 @@ public final class MetalCrossShaderCompiler {
      *                         its own {@code #version}).
      * @param defines          optional preprocessor defines forwarded to
      *                         glslang (may be {@code null}).
-     * @return the dry-compiled MSL result (also cached).
+     * @return the dry-compiled MSL result.
      * @throws ShaderCompileException if GLSL&#8594;SPIR-V or SPIR-V&#8594;MSL
      *                               fails; the exception message includes the
      *                               glslang info log.
@@ -379,6 +407,51 @@ public final class MetalCrossShaderCompiler {
             final @Nullable String tessEvalGlsl,
             final @Nullable String fragmentGlsl,
             final @Nullable String defines
+    ) throws ShaderCompileException {
+        return tryCompileShaderpackMsl(
+                name, vertexGlsl, geometryGlsl, tessControlGlsl, tessEvalGlsl,
+                fragmentGlsl, defines, null
+        );
+    }
+
+    /**
+     * Device-free dry compile that additionally maps the vertex stage inputs to
+     * explicit MSL {@code [[attribute(N)]]} locations, mirroring the production
+     * path's {@code physicalInputNames} wiring ({@link #compileShaderpack}).
+     *
+     * <p>Used by tests to verify the entity attribute mapping without a Metal
+     * device.</p>
+     *
+     * @param name               program name (diagnostics only).
+     * @param vertexGlsl         vertex GLSL source (non-null, declares {@code #version}).
+     * @param fragmentGlsl       fragment GLSL source (non-null, declares {@code #version}).
+     * @param defines            optional preprocessor defines (may be {@code null}).
+     * @param physicalInputNames vertex input names in physical attribute order,
+     *                           as produced by {@link #vertexInputNames(VertexFormat[])}.
+     * @return the dry-compiled MSL result.
+     * @throws ShaderCompileException if GLSL&#8594;SPIR-V or SPIR-V&#8594;MSL fails.
+     */
+    static ShaderpackMslResult tryCompileShaderpackMsl(
+            final String name,
+            final String vertexGlsl,
+            final String fragmentGlsl,
+            final @Nullable String defines,
+            final @Nullable List<String> physicalInputNames
+    ) throws ShaderCompileException {
+        return tryCompileShaderpackMsl(
+                name, vertexGlsl, null, null, null, fragmentGlsl, defines, physicalInputNames
+        );
+    }
+
+    private static ShaderpackMslResult tryCompileShaderpackMsl(
+            final String name,
+            final @Nullable String vertexGlsl,
+            final @Nullable String geometryGlsl,
+            final @Nullable String tessControlGlsl,
+            final @Nullable String tessEvalGlsl,
+            final @Nullable String fragmentGlsl,
+            final @Nullable String defines,
+            final @Nullable List<String> physicalInputNames
     ) throws ShaderCompileException {
         if (vertexGlsl == null || fragmentGlsl == null) {
             throw new ShaderCompileException(
@@ -413,47 +486,38 @@ public final class MetalCrossShaderCompiler {
                 reflectShaderpackResources(spirvWordsToByteBuffer(vertexSpvWords));
         final ShaderpackReflection fragmentReflection =
                 reflectShaderpackResources(spirvWordsToByteBuffer(fragmentSpvWords));
+        rejectSeparateSamplers(name, vertexReflection, fragmentReflection);
         final List<VulkanBindGroupLayout.Entry> entries =
                 buildShaderpackBindGroupEntries(vertexReflection, fragmentReflection);
         final Map<String, Integer> resourceBindings = shaderpackResourceBindings(entries);
         final int pushConstantBinding = entries.size();
         final MslShader vertexMsl = spirvToMsl(
                 spirvWordsToByteBuffer(vertexSpvWords), pushConstantBinding,
-                Map.of(), false, Map.of(), resourceBindings
+                Map.of(), false, Map.of(), resourceBindings, physicalInputNames,
+                name + " vertex"
         );
         final MslShader fragmentMsl = spirvToMsl(
                 spirvWordsToByteBuffer(fragmentSpvWords), pushConstantBinding,
-                Map.of(), true, Map.of(), resourceBindings
+                Map.of(), true, Map.of(), resourceBindings, null,
+                name + " fragment"
         );
 
         final String vertexEntryPoint = extractEntryPoint(vertexMsl.source(), VERTEX_ENTRY_PATTERN, "main0");
         final String fragmentEntryPoint = extractEntryPoint(fragmentMsl.source(), FRAGMENT_ENTRY_PATTERN, "main0");
 
         final ShaderpackMslResult result = new ShaderpackMslResult(
-                name, vertexMsl.source(), fragmentMsl.source(), vertexEntryPoint, fragmentEntryPoint
+                name, vertexMsl.source(), fragmentMsl.source(), vertexEntryPoint, fragmentEntryPoint,
+                vertexMsl.sampledImageIndices(), fragmentMsl.sampledImageIndices()
         );
-        SHADERPACK_MSL_CACHE.put(name, result);
         return result;
-    }
-
-    /**
-     * Retrieves a previously dry-compiled shaderpack MSL result by program name,
-     * or {@code null} if {@code name} has not been dry-compiled (or was evicted).
-     * Intended for the forthcoming Iris&rarr;Metal pipeline-binding step.
-     *
-     * @param name the program name used as the cache key.
-     * @return the cached MSL result, or {@code null}.
-     */
-    public static @Nullable ShaderpackMslResult getCachedShaderpackMsl(final String name) {
-        return SHADERPACK_MSL_CACHE.get(name);
     }
 
     /**
      * Cache of shaderpack programs whose Metal render pipeline state object
      * ({@link MetalCompiledRenderPipeline}) has been successfully constructed,
      * keyed by program name. Populated by
-     * {@link #compileShaderpackPipeline} and intended for retrieval by the
-     * (forthcoming) Iris&rarr;Metal render dispatch step.
+     * {@link #compileShaderpackPipeline} and read back by
+     * {@link #getCachedShaderpackPipeline}.
      */
     private static final Map<String, MetalCompiledRenderPipeline> SHADERPACK_PIPELINE_CACHE = new ConcurrentHashMap<>();
 
@@ -538,21 +602,11 @@ public final class MetalCrossShaderCompiler {
                 PrimitiveTopology.TRIANGLES,
                 new VertexFormat[]{vertexFormat},
                 null,
-                new ColorTargetState[]{ColorTargetState.DEFAULT}
+                new ColorTargetState[]{ColorTargetState.DEFAULT},
+                false
         );
         SHADERPACK_PIPELINE_CACHE.put(name, pipeline);
         return true;
-    }
-
-    /**
-     * Returns whether a Metal render pipeline has been constructed and cached
-     * for the given shaderpack program name.
-     *
-     * @param name the program name.
-     * @return {@code true} if a cached pipeline exists.
-     */
-    public static boolean hasCachedShaderpackPipeline(final String name) {
-        return SHADERPACK_PIPELINE_CACHE.containsKey(name);
     }
 
     /**
@@ -569,16 +623,19 @@ public final class MetalCrossShaderCompiler {
 
     /**
      * Result of a successful shaderpack dry-compile: the program name, the
-     * compiled vertex/fragment MSL sources, and their entry-point function
-     * names. Cached in {@link #SHADERPACK_MSL_CACHE} for retrieval by the
-     * pipeline-binding step.
+     * compiled vertex/fragment MSL sources, their entry-point function names,
+     * and the per-stage compact sampled-image index plans the runtime binding
+     * path uses to match {@code [[texture(N)]]}/{@code [[sampler(N)]]}
+     * attributes.
      */
     public record ShaderpackMslResult(
             String name,
             String vertexMsl,
             String fragmentMsl,
             String vertexEntryPoint,
-            String fragmentEntryPoint
+            String fragmentEntryPoint,
+            Map<String, Integer> vertexSampledImageIndices,
+            Map<String, Integer> fragmentSampledImageIndices
     ) {
     }
 
@@ -873,11 +930,35 @@ public final class MetalCrossShaderCompiler {
         return matcher.find() ? matcher.group(1) : fallback;
     }
 
+    /**
+     * Assigns compact per-stage Metal sampler/texture indices to the active
+     * sampled images of one shader stage. Delegates to the native-free
+     * {@link ShaderpackSamplerIndexPlan} so the policy is unit-testable on
+     * hosts without the Metal native libraries.
+     *
+     * @param declaredImages sampled image names in stage declaration order.
+     * @param activeNames    names SPIRV-Cross reported as active for the stage.
+     * @param label          human-readable stage label used in the error message.
+     * @return an immutable, declaration-ordered map of active image name to
+     *         compact Metal index.
+     * @throws ShaderCompileException if more than
+     *                               {@link #MAX_METAL_SAMPLERS_PER_STAGE}
+     *                               declared images are active.
+     */
+    static Map<String, Integer> assignSampledImageIndices(
+            final List<String> declaredImages,
+            final Set<String> activeNames,
+            final String label
+    ) throws ShaderCompileException {
+        return ShaderpackSamplerIndexPlan.assignSampledImageIndices(declaredImages, activeNames, label);
+    }
+
     private static List<MetalCompiledRenderPipeline.ResourceBinding> buildResourceBindings(
             final List<VulkanBindGroupLayout.Entry> entries,
             final List<RasterStorageResource> storageResources,
             final MslShader vertexMsl,
-            final MslShader fragmentMsl
+            final MslShader fragmentMsl,
+            final boolean compactShaderpackBindings
     ) {
         List<MetalCompiledRenderPipeline.ResourceBinding> resources = new ArrayList<>(
                 entries.size() + storageResources.size() + 1
@@ -890,7 +971,31 @@ public final class MetalCrossShaderCompiler {
                 case TEXEL_BUFFER -> MetalCompiledRenderPipeline.ResourceKind.TEXEL_BUFFER;
             };
             GpuFormat texelFormat = entry.type() == VulkanBindGroupLayout.VulkanBindGroupEntryType.TEXEL_BUFFER ? entry.texelBufferFormat() : null;
-            resources.add(new MetalCompiledRenderPipeline.ResourceBinding(kind, entry.name(), index, stageMask(entry.name(), vertexMsl, fragmentMsl), texelFormat));
+            boolean sampledResource = entry.type() == VulkanBindGroupLayout.VulkanBindGroupEntryType.SAMPLED_IMAGE
+                    || entry.type() == VulkanBindGroupLayout.VulkanBindGroupEntryType.TEXEL_BUFFER;
+            if (compactShaderpackBindings && sampledResource) {
+                // Shaderpack sampled resources are re-indexed per stage: each
+                // stage assigns 0..n-1 to its own active images, so a resource
+                // may live at different Metal indices in the vertex and fragment
+                // MSL (or be absent from one stage entirely, giving mask 0 and
+                // being skipped at push time).
+                Integer vertexIndex = vertexMsl.sampledImageIndices().get(entry.name());
+                Integer fragmentIndex = fragmentMsl.sampledImageIndices().get(entry.name());
+                int stageMask = (vertexIndex != null ? MetalCompiledRenderPipeline.STAGE_VERTEX : 0)
+                        | (fragmentIndex != null ? MetalCompiledRenderPipeline.STAGE_FRAGMENT : 0);
+                resources.add(new MetalCompiledRenderPipeline.ResourceBinding(
+                        kind,
+                        entry.name(),
+                        vertexIndex == null ? 0 : vertexIndex,
+                        stageMask,
+                        texelFormat,
+                        fragmentIndex == null ? 0 : fragmentIndex
+                ));
+                continue;
+            }
+            resources.add(new MetalCompiledRenderPipeline.ResourceBinding(
+                    kind, entry.name(), index, stageMask(entry.name(), vertexMsl, fragmentMsl), texelFormat, index
+            ));
         }
 
         for (RasterStorageResource storage : storageResources) {
@@ -903,22 +1008,138 @@ public final class MetalCrossShaderCompiler {
                     storage.descriptorName(),
                     storage.physicalBinding(),
                     storage.stageMask(),
-                    null
+                    null,
+                    storage.physicalBinding()
             ));
         }
 
         int pushConstantStageMask = (vertexMsl.hasPushConstants() ? MetalCompiledRenderPipeline.STAGE_VERTEX : 0)
                 | (fragmentMsl.hasPushConstants() ? MetalCompiledRenderPipeline.STAGE_FRAGMENT : 0);
         if (pushConstantStageMask != 0) {
+            int pushConstantBinding = entries.size() + storageResources.size();
             resources.add(new MetalCompiledRenderPipeline.ResourceBinding(
                     MetalCompiledRenderPipeline.ResourceKind.UNIFORM_BUFFER,
                     "push_constants",
-                    entries.size() + storageResources.size(),
+                    pushConstantBinding,
                     pushConstantStageMask,
-                    null
+                    null,
+                    pushConstantBinding
             ));
         }
         return resources;
+    }
+
+    /**
+     * H1 diagnosis ({@code -Dmetallum.iris.debug.dumpBindings}): dumps every
+     * {@code SAMPLED_IMAGE} binding's per-stage compact indices and the
+     * {@code [[texture(N)]]}/{@code [[sampler(N)]]} indices actually present in
+     * the emitted MSL, then warns (never throws) when a stage whose mask has
+     * the resource active has an expected texture index absent from that
+     * stage's MSL index set. The check runs on the same MSL text the pipeline
+     * is built from, so a persistent mismatch here would mean the runtime
+     * binding table disagrees with SPIRV-Cross's decoration.
+     *
+     * <p>Every logged line is also recorded into {@link MetalProbeReport}
+     * (the game's log file is not retrievable on the target device), bounded by
+     * {@link #BINDINGS_PROBE_LINE_LIMIT} with one
+     * {@code bindings ... truncated (N more)} marker past the cap.
+     */
+    private static void dumpSampledImageBindings(
+            final String program,
+            final List<MetalCompiledRenderPipeline.ResourceBinding> resources,
+            final MslShader vertexMsl,
+            final MslShader fragmentMsl
+    ) {
+        if (!MetalDebugSwitches.DUMP_BINDINGS) {
+            return;
+        }
+        Map<String, Integer> vertexTextures = parseMslIndices(vertexMsl.source(), MSL_TEXTURE_ATTRIBUTE);
+        Map<String, Integer> fragmentTextures = parseMslIndices(fragmentMsl.source(), MSL_TEXTURE_ATTRIBUTE);
+        Map<String, Integer> vertexSamplers = parseMslIndices(vertexMsl.source(), MSL_SAMPLER_ATTRIBUTE);
+        Map<String, Integer> fragmentSamplers = parseMslIndices(fragmentMsl.source(), MSL_SAMPLER_ATTRIBUTE);
+        List<String> probeLines = new ArrayList<>();
+        String header = "bindings " + program + " vertexTextures=" + vertexTextures
+                + " vertexSamplers=" + vertexSamplers
+                + " fragmentTextures=" + fragmentTextures
+                + " fragmentSamplers=" + fragmentSamplers;
+        probeLines.add(header);
+        Metallum.LOGGER.info("[metallum-iris][bindings] {}", header);
+        for (MetalCompiledRenderPipeline.ResourceBinding resource : resources) {
+            if (resource.kind() != MetalCompiledRenderPipeline.ResourceKind.SAMPLED_IMAGE) {
+                continue;
+            }
+            int vertexIndex = resource.bindingIndexForStage(MetalCompiledRenderPipeline.STAGE_VERTEX);
+            int fragmentIndex = resource.bindingIndexForStage(MetalCompiledRenderPipeline.STAGE_FRAGMENT);
+            String binding = "bindings " + program + " name=" + resource.name()
+                    + " stageMask=" + resource.stageMask()
+                    + " vertexIndex=" + vertexIndex
+                    + " fragmentIndex=" + fragmentIndex;
+            probeLines.add(binding);
+            Metallum.LOGGER.info("[metallum-iris][bindings] {}", binding);
+            if ((resource.stageMask() & MetalCompiledRenderPipeline.STAGE_VERTEX) != 0
+                    && !vertexTextures.containsValue(vertexIndex)) {
+                String mismatch = "bindings " + program + " MISMATCH stage=vertex name="
+                        + resource.name() + " expected=" + vertexIndex
+                        + " mslSet=" + vertexTextures.values();
+                probeLines.add(mismatch);
+                Metallum.LOGGER.warn("[metallum-iris][bindings] {}", mismatch);
+            }
+            if ((resource.stageMask() & MetalCompiledRenderPipeline.STAGE_FRAGMENT) != 0
+                    && !fragmentTextures.containsValue(fragmentIndex)) {
+                String mismatch = "bindings " + program + " MISMATCH stage=fragment name="
+                        + resource.name() + " expected=" + fragmentIndex
+                        + " mslSet=" + fragmentTextures.values();
+                probeLines.add(mismatch);
+                Metallum.LOGGER.warn("[metallum-iris][bindings] {}", mismatch);
+            }
+        }
+        recordBindingsToProbe(program, probeLines);
+    }
+
+    /** Probe-file cap for binding dump lines; the logger still gets every line. */
+    private static final int BINDINGS_PROBE_LINE_LIMIT = 800;
+    private static int bindingsProbeLines;
+    private static boolean bindingsProbeTruncated;
+
+    /**
+     * Appends this program's binding lines to {@link MetalProbeReport} while
+     * the 800-line budget lasts, then records exactly one truncation marker
+     * carrying the number of lines dropped by the program that crossed the cap.
+     * Later programs are suppressed silently (the marker already tells the
+     * reader the dump is incomplete).
+     */
+    private static synchronized void recordBindingsToProbe(
+            final String program,
+            final List<String> lines
+    ) {
+        if (bindingsProbeTruncated) {
+            return;
+        }
+        int budget = BINDINGS_PROBE_LINE_LIMIT - bindingsProbeLines;
+        if (lines.size() <= budget) {
+            for (String line : lines) {
+                MetalProbeReport.record(line);
+            }
+            bindingsProbeLines += lines.size();
+            return;
+        }
+        for (int index = 0; index < budget; index++) {
+            MetalProbeReport.record(lines.get(index));
+        }
+        bindingsProbeLines = BINDINGS_PROBE_LINE_LIMIT;
+        bindingsProbeTruncated = true;
+        MetalProbeReport.record(
+                "bindings " + program + " truncated (" + (lines.size() - budget) + " more)"
+        );
+    }
+
+    private static Map<String, Integer> parseMslIndices(final String msl, final Pattern pattern) {
+        Map<String, Integer> indices = new LinkedHashMap<>();
+        Matcher matcher = pattern.matcher(msl);
+        while (matcher.find()) {
+            indices.put(matcher.group(1), Integer.parseInt(matcher.group(2)));
+        }
+        return indices;
     }
 
     private static int stageMask(
@@ -977,7 +1198,7 @@ public final class MetalCrossShaderCompiler {
     record VertexInputLayout(List<String> names, Map<String, GpuFormat> formats) {
     }
 
-    private static List<String> vertexInputNames(final VertexFormat[] bindings) {
+    static List<String> vertexInputNames(final VertexFormat[] bindings) {
         List<String> names = new ArrayList<>();
         for (VertexFormat binding : bindings) {
             if (binding == null) {
@@ -1225,13 +1446,37 @@ public final class MetalCrossShaderCompiler {
         SpvcReflectedResource.Buffer list = SpvcReflectedResource.create(pList.get(0), count);
         for (int i = 0; i < count; i++) {
             SpvcReflectedResource input = list.get(i);
-            GpuFormat format = attributeFormats.get(input.nameString());
-            if (format == null || !format.name().endsWith("_UINT")) {
+            String inputName = input.nameString();
+            GpuFormat format = attributeFormats.get(inputName);
+            if (format == null && inputName.startsWith(IRIS_INPUT_ALIAS_PREFIX)) {
+                // Iris' vanilla-core transformer renames the physical inputs
+                // (UV1 -> iris_UV1, Position -> iris_Position, ...) while the
+                // format table is keyed by the physical element names. Retry
+                // the alias so renamed integer inputs still get their MSL
+                // interface format.
+                format = attributeFormats.get(
+                        inputName.substring(IRIS_INPUT_ALIAS_PREFIX.length())
+                );
+            }
+            if (format == null) {
                 continue;
             }
-            int width = format.name().contains("8") ? Spvc.SPVC_MSL_SHADER_VARIABLE_FORMAT_UINT8
-                    : format.name().contains("16") ? Spvc.SPVC_MSL_SHADER_VARIABLE_FORMAT_UINT16
-                      : Spvc.SPVC_MSL_SHADER_VARIABLE_FORMAT_OTHER;
+            String formatName = format.name();
+            int width;
+            if (formatName.endsWith("_UINT")) {
+                width = formatName.contains("8") ? Spvc.SPVC_MSL_SHADER_VARIABLE_FORMAT_UINT8
+                        : formatName.contains("16") ? Spvc.SPVC_MSL_SHADER_VARIABLE_FORMAT_UINT16
+                          : Spvc.SPVC_MSL_SHADER_VARIABLE_FORMAT_OTHER;
+            } else if (formatName.endsWith("_SINT")) {
+                // No signed-width enum exists in the SPIRV-Cross binding; the
+                // Any16/Any32 hints make it emit shortN/intN from the SPIR-V
+                // type, matching the backend's Short2/Int2 vertex formats.
+                width = formatName.contains("16") ? Spvc.SPVC_MSL_SHADER_VARIABLE_FORMAT_ANY16
+                        : formatName.contains("32") ? Spvc.SPVC_MSL_SHADER_VARIABLE_FORMAT_ANY32
+                          : Spvc.SPVC_MSL_SHADER_VARIABLE_FORMAT_OTHER;
+            } else {
+                continue;
+            }
             if (width == Spvc.SPVC_MSL_SHADER_VARIABLE_FORMAT_OTHER) {
                 continue;
             }
@@ -1374,6 +1619,7 @@ public final class MetalCrossShaderCompiler {
                 enablePointSize,
                 explicitFragmentOutputLocations,
                 explicitResourceBindings,
+                null,
                 null
         );
     }
@@ -1401,6 +1647,7 @@ public final class MetalCrossShaderCompiler {
                 enablePointSize,
                 explicitFragmentOutputLocations,
                 Map.of(),
+                null,
                 null
         );
     }
@@ -1412,7 +1659,8 @@ public final class MetalCrossShaderCompiler {
             final boolean enablePointSize,
             final Map<String, Integer> explicitFragmentOutputLocations,
             final Map<String, Integer> explicitResourceBindings,
-            @Nullable final List<String> physicalInputNames
+            @Nullable final List<String> physicalInputNames,
+            @Nullable final String stageLabel
     ) throws ShaderCompileException {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             IntBuffer spirvWords = spirvBytes.asIntBuffer();
@@ -1464,7 +1712,52 @@ public final class MetalCrossShaderCompiler {
                     );
                 }
                 long compiler = pCompiler.get(0);
-                applyExplicitResourceBindings(stack, compiler, explicitResourceBindings);
+
+                // Active-set analysis must run before any explicit binding is
+                // applied: the compact shaderpack index plan below is derived
+                // from it. Decoration writes and compiler options do not affect
+                // the active interface set, so hoisting this block ahead of
+                // applyExplicitResourceBindings is order-independent.
+                PointerBuffer pActiveSet = stack.mallocPointer(1);
+                checkSpvc(Spvc.spvc_compiler_get_active_interface_variables(compiler, pActiveSet), "spvc_compiler_get_active_interface_variables");
+                long activeSet = pActiveSet.get(0);
+                checkSpvc(Spvc.spvc_compiler_set_enabled_interface_variables(compiler, activeSet), "spvc_compiler_set_enabled_interface_variables");
+
+                Set<String> activeResources = collectActiveResourceNames(stack, compiler, activeSet);
+
+                final Map<String, Integer> sampledImageIndices;
+                final Map<String, Integer> effectiveResourceBindings;
+                if (explicitResourceBindings.isEmpty()) {
+                    // Vanilla path: bindings are already final (layout-derived).
+                    sampledImageIndices = Map.of();
+                    effectiveResourceBindings = explicitResourceBindings;
+                } else {
+                    // Shaderpack path: remap the stage's active sampled images
+                    // onto a compact 0..n-1 Metal index range (Metal allows at
+                    // most 16 sampler slots per stage). Non-active images keep a
+                    // distinct sentinel binding (16 + declaration ordinal) so
+                    // applyExplicitResourceBindings still finds every declared
+                    // name; they are never declared in the emitted MSL because
+                    // the enabled-interface set excludes them.
+                    final List<String> declaredImages = declaredSampledImages(stack, compiler);
+                    sampledImageIndices = assignSampledImageIndices(
+                            declaredImages,
+                            activeResources,
+                            stageLabel == null ? "<unknown stage>" : stageLabel
+                    );
+                    final Map<String, Integer> mergedBindings = new LinkedHashMap<>(explicitResourceBindings);
+                    for (int ordinal = 0; ordinal < declaredImages.size(); ordinal++) {
+                        final String imageName = declaredImages.get(ordinal);
+                        final Integer compactIndex = sampledImageIndices.get(imageName);
+                        mergedBindings.put(
+                                imageName,
+                                compactIndex != null ? compactIndex : MAX_METAL_SAMPLERS_PER_STAGE + ordinal
+                        );
+                    }
+                    effectiveResourceBindings = mergedBindings;
+                }
+                applyExplicitResourceBindings(stack, compiler, effectiveResourceBindings);
+
                 List<GenericVertexInput> genericVertexInputs = physicalInputNames == null
                         ? List.of()
                         : applyShaderpackVertexInputLocations(stack, compiler, physicalInputNames);
@@ -1515,13 +1808,6 @@ public final class MetalCrossShaderCompiler {
                         stack, compiler, explicitFragmentOutputLocations
                 );
 
-                PointerBuffer pActiveSet = stack.mallocPointer(1);
-                checkSpvc(Spvc.spvc_compiler_get_active_interface_variables(compiler, pActiveSet), "spvc_compiler_get_active_interface_variables");
-                long activeSet = pActiveSet.get(0);
-                checkSpvc(Spvc.spvc_compiler_set_enabled_interface_variables(compiler, activeSet), "spvc_compiler_set_enabled_interface_variables");
-
-                Set<String> activeResources = collectActiveResourceNames(stack, compiler, activeSet);
-
                 PointerBuffer pResources = stack.mallocPointer(1);
                 checkSpvc(Spvc.spvc_compiler_create_shader_resources(compiler, pResources), "spvc_compiler_create_shader_resources");
                 long resources = pResources.get(0);
@@ -1541,6 +1827,7 @@ public final class MetalCrossShaderCompiler {
                         MemoryUtil.memUTF8(pSource.get(0)),
                         hasPushConstants,
                         activeResources,
+                        sampledImageIndices,
                         stageOutputLocations,
                         genericVertexInputs
                 );
@@ -1554,6 +1841,7 @@ public final class MetalCrossShaderCompiler {
             String source,
             boolean hasPushConstants,
             Set<String> activeResources,
+            Map<String, Integer> sampledImageIndices,
             Set<Integer> stageOutputLocations,
             List<GenericVertexInput> genericVertexInputs
     ) {
@@ -1904,6 +2192,58 @@ public final class MetalCrossShaderCompiler {
             List<String> sampledImages,
             List<String> separateSamplers
     ) {
+    }
+
+    /**
+     * Rejects shaderpack programs that declare standalone (separate) sampler
+     * objects.
+     *
+     * <p>The Metal raster path maps each sampled image to one combined
+     * {@code [[texture(N)]]}/{@code [[sampler(N)]]} pair. A standalone sampler
+     * variable has no image to pair with and cannot be represented on that
+     * path, so fail the compile with the offending names instead of letting
+     * SPIRV-Cross emit an unbound sampler parameter.
+     *
+     * @param programName        shaderpack program name (diagnostics).
+     * @param vertexReflection   vertex SPIR-V reflection.
+     * @param fragmentReflection fragment SPIR-V reflection.
+     * @throws ShaderCompileException if either stage declares a separate
+     *                               sampler object.
+     */
+    private static void rejectSeparateSamplers(
+            final String programName,
+            final ShaderpackReflection vertexReflection,
+            final ShaderpackReflection fragmentReflection
+    ) throws ShaderCompileException {
+        final Set<String> separateSamplers = new LinkedHashSet<>(vertexReflection.separateSamplers());
+        separateSamplers.addAll(fragmentReflection.separateSamplers());
+        if (!separateSamplers.isEmpty()) {
+            throw new ShaderCompileException(
+                    "Shaderpack program '" + programName + "' declares separate sampler objects " + separateSamplers
+                            + "; the Metal raster path requires combined image samplers and cannot bind standalone "
+                            + "sampler objects."
+            );
+        }
+    }
+
+    /**
+     * Collects the sampled image names declared by one stage in declaration
+     * order: combined {@code SAMPLED_IMAGE} resources first, then
+     * {@code SEPARATE_IMAGE} resources, de-duplicated. This is the list
+     * {@link #assignSampledImageIndices} walks to build the compact per-stage
+     * Metal index plan.
+     */
+    private static List<String> declaredSampledImages(final MemoryStack stack, final long compiler) throws ShaderCompileException {
+        final PointerBuffer pResources = stack.mallocPointer(1);
+        checkSpvc(
+                Spvc.spvc_compiler_create_shader_resources(compiler, pResources),
+                "spvc_compiler_create_shader_resources(declared sampled images)"
+        );
+        final long resources = pResources.get(0);
+        final LinkedHashSet<String> names = new LinkedHashSet<>();
+        collectResourceNames(stack, resources, Spvc.SPVC_RESOURCE_TYPE_SAMPLED_IMAGE, names);
+        collectResourceNames(stack, resources, Spvc.SPVC_RESOURCE_TYPE_SEPARATE_IMAGE, names);
+        return List.copyOf(names);
     }
 
     private static void checkSpvc(final int result, final String stage) throws ShaderCompileException {

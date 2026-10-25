@@ -1,8 +1,5 @@
 package com.metallum.client.metal.render;
 
-import com.metallum.client.metal.render.bridge.MetalNativeBridge;
-import com.mojang.blaze3d.buffers.GpuBuffer;
-import com.mojang.blaze3d.shaders.GpuDebugOptions;
 import com.mojang.blaze3d.textures.AddressMode;
 import com.mojang.blaze3d.textures.FilterMode;
 import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
@@ -22,9 +19,7 @@ import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.lang.foreign.MemorySegment;
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.EnumMap;
 import java.util.List;
 
@@ -38,15 +33,9 @@ final class MetalIrisCustomTexturesIntegrationTest {
 
     @BeforeEach
     void createDevice() {
-        MemorySegment nativeDevice = MetalNativeBridge.metallum_create_system_default_device();
-        assertFalse(MetalNativeBridge.isNullHandle(nativeDevice));
-        device = new MetalDevice(
+        device = MetalGpuTestSupport.createSystemDefaultDevice(
                 (identifier, type) -> null,
-                new GpuDebugOptions(2, true, true, true),
-                nativeDevice,
-                MemorySegment.NULL,
-                "Iris custom textures integration device",
-                MemorySegment.NULL
+                "Iris custom textures integration device"
         );
         encoder = device.createCommandEncoder();
     }
@@ -69,9 +58,12 @@ final class MetalIrisCustomTexturesIntegrationTest {
             MetalRenderPass.TextureViewAndSampler binding =
                     textures.resolve(TextureStage.COMPOSITE_AND_FINAL, "colortex7");
             assertNotNull(binding);
-            ByteBuffer pixels = readback((MetalGpuTexture) binding.textureView().texture());
-            assertPixel(pixels, 0, 255, 0, 0, 255);
-            assertPixel(pixels, 1, 0, 128, 255, 64);
+            ByteBuffer pixels = MetalGpuTestSupport.readback(
+                    device, encoder, (MetalGpuTexture) binding.textureView().texture(),
+                    "iris custom texture readback"
+            );
+            MetalGpuTestSupport.assertPixel(pixels, 0, 255, 0, 0, 255);
+            MetalGpuTestSupport.assertPixel(pixels, 1, 0, 128, 255, 64);
             assertEquals(AddressMode.CLAMP_TO_EDGE, binding.sampler().getAddressModeU());
             assertEquals(AddressMode.CLAMP_TO_EDGE, binding.sampler().getAddressModeV());
             assertEquals(FilterMode.NEAREST, binding.sampler().getMinFilter());
@@ -196,25 +188,6 @@ final class MetalIrisCustomTexturesIntegrationTest {
         }
     }
 
-    private ByteBuffer readback(final MetalGpuTexture texture) {
-        int size = texture.getWidth(0) * texture.getHeight(0) * texture.pixelSize();
-        try (MetalGpuBuffer buffer = (MetalGpuBuffer) device.createBuffer(
-                () -> "iris custom texture readback",
-                GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST,
-                size
-        )) {
-            encoder.copyTextureToBuffer(texture, buffer, 0L, () -> {
-            }, 0);
-            encoder.submit();
-            device.waitForSubmittedGpuWork();
-            ByteBuffer source = buffer.currentStorage().limit(size).slice().order(ByteOrder.nativeOrder());
-            ByteBuffer copy = ByteBuffer.allocate(size);
-            copy.put(source);
-            copy.flip();
-            return copy;
-        }
-    }
-
     private static EnumMap<TextureStage, Object2ObjectOpenHashMap<String, CustomTextureData>> definitions(
             final TextureStage stage,
             final String sampler,
@@ -244,20 +217,5 @@ final class MetalIrisCustomTexturesIntegrationTest {
 
     private static TextureFilteringData filtering() {
         return new TextureFilteringData(false, false);
-    }
-
-    private static void assertPixel(
-            final ByteBuffer pixels,
-            final int index,
-            final int red,
-            final int green,
-            final int blue,
-            final int alpha
-    ) {
-        int offset = index * 4;
-        assertEquals(red, Byte.toUnsignedInt(pixels.get(offset)), "red at pixel " + index);
-        assertEquals(green, Byte.toUnsignedInt(pixels.get(offset + 1)), "green at pixel " + index);
-        assertEquals(blue, Byte.toUnsignedInt(pixels.get(offset + 2)), "blue at pixel " + index);
-        assertEquals(alpha, Byte.toUnsignedInt(pixels.get(offset + 3)), "alpha at pixel " + index);
     }
 }

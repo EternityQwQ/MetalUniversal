@@ -256,7 +256,7 @@ final class IrisMetalRuntimeReceipts implements AutoCloseable {
         }
     }
 
-    private boolean enabled() {
+    boolean enabled() {
         return writer != null;
     }
 

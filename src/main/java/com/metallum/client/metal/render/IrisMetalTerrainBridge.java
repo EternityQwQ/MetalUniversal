@@ -10,19 +10,23 @@ import net.caffeinemc.mods.sodium.client.render.chunk.terrain.TerrainRenderPass;
 import net.irisshaders.iris.Iris;
 import net.irisshaders.iris.pipeline.WorldRenderingPipeline;
 import net.irisshaders.iris.pipeline.programs.ShaderKey;
+import net.irisshaders.iris.shaderpack.texture.TextureStage;
 import net.irisshaders.iris.shadows.ShadowRenderingState;
 import org.joml.Vector4fc;
 import org.jspecify.annotations.Nullable;
 
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalDouble;
+import java.util.Set;
 import java.util.function.Supplier;
 
 /** Atomically pairs one Sodium terrain draw with its Iris PSO and attachments. */
 public final class IrisMetalTerrainBridge {
     private static final ThreadLocal<TerrainContext> ACTIVE_TERRAIN = new ThreadLocal<>();
+    private static final Set<String> REPORTED_CUSTOM_SAMPLERS = new HashSet<>();
 
     private IrisMetalTerrainBridge() {
     }
@@ -66,17 +70,15 @@ public final class IrisMetalTerrainBridge {
         }
         IrisMetalShadowTargets shadowTargets = context.pipeline().resources().shadowTargets();
         if (ShadowRenderingState.areShadowsCurrentlyBeingRendered() && shadowTargets != null) {
-            Vector4fc[] shadowClearColors = null;
-            if (clearColor.isPresent()) {
-                shadowClearColors = new Vector4fc[context.drawBuffers().length];
-                shadowClearColors[0] = clearColor.orElseThrow();
-            }
+            // B (M6.3): caster passes never clear. The vanilla terrain draw's
+            // clears must not be forwarded to the shadow targets; clears run
+            // once per frame before the caster pass.
             IrisMetalRenderTargets.RenderPassDescriptorWithViews descriptor =
                     shadowTargets.createShadowGbufferDescriptor(
                             label.get(),
                             context.drawBuffers(),
-                            shadowClearColors,
-                            clearDepth.isPresent() ? clearDepth.getAsDouble() : null
+                            null,
+                            null
                     );
             return encoder.createRenderPass(descriptor.descriptor());
         }
@@ -159,6 +161,30 @@ public final class IrisMetalTerrainBridge {
         if (context == null) {
             return null;
         }
+        // Terrain and shadow-caster draws share TextureStage.GBUFFERS_AND_SHADOW
+        // (texture.gbuffers.*). Stage custom textures take precedence over every
+        // name-based default, exactly like upstream's
+        // ProgramSamplers.CustomTextureSamplerInterceptor. Before this check,
+        // CR's texture.gbuffers.gaux4 (cloud-water.png, the water normal map)
+        // fell through to LEGACY_RENDER_TARGETS index 7 -> colortex7, the
+        // reflection buffer, so water sampled reflections instead of waves.
+        MetalRenderPass.TextureViewAndSampler custom = context.pipeline().resources()
+                .customTextures()
+                .resolve(TextureStage.GBUFFERS_AND_SHADOW, name);
+        if (custom != null) {
+            recordCustomSamplerOverride("terrain", name);
+        }
+        return IrisMetalCustomTextures.overrideFirst(
+                custom,
+                () -> standardSampler(context, name, bound)
+        );
+    }
+
+    private static MetalRenderPass.@Nullable TextureViewAndSampler standardSampler(
+            final TerrainContext context,
+            final String name,
+            final Map<String, MetalRenderPass.TextureViewAndSampler> bound
+    ) {
         MetalRenderPass.TextureViewAndSampler alias = switch (name) {
             case "gtexture", "texture", "tex" -> bound.get("u_BlockTex");
             case "lightmap" -> bound.get("u_LightTex");
@@ -169,6 +195,11 @@ public final class IrisMetalTerrainBridge {
         }
         if ("noisetex".equals(name)) {
             return context.pipeline().resources().noiseTexture().binding();
+        }
+        if (IrisMetalPbrDefaults.isPbrSampler(name)) {
+            // Upstream level samplers bind the neutral PBR defaults when no
+            // _n/_s texture was loaded (Sildur's nMap, Unbound labPBR).
+            return context.pipeline().resources().pbrDefaults().binding(name);
         }
         IrisMetalRenderTargets renderTargets = context.pipeline().resources().renderTargets();
         GpuTextureView depthView = switch (name) {
@@ -183,7 +214,7 @@ public final class IrisMetalTerrainBridge {
                     renderTargets.depthSampler()
             );
         }
-        int colorIndex = renderTargetIndex(name);
+        int colorIndex = IrisMetalRenderTargets.renderTargetIndex(name);
         if (colorIndex >= 0) {
             if (colorIndex >= renderTargets.colorTargets().targetCount()) {
                 throw new IllegalStateException(
@@ -201,11 +232,10 @@ public final class IrisMetalTerrainBridge {
         if (shadowTargets == null) {
             return null;
         }
-        int depthIndex = switch (name) {
-            case "shadowtex0", "shadowtex0HW", "watershadow" -> 0;
-            case "shadowtex1", "shadowtex1HW" -> 1;
-            default -> -1;
-        };
+        // Shared legacy depth aliases: shadowtex0/1 (+HW/DH variants),
+        // watershadow -> shadowtex0, and bare `shadow` -> shadowtex0 here
+        // (the bridge has no per-program declaration view; see the helper).
+        int depthIndex = IrisMetalExecutionGraph.legacyShadowDepth(name, false);
         if (depthIndex >= 0) {
             boolean comparison = !name.endsWith("HW");
             return new MetalRenderPass.TextureViewAndSampler(
@@ -215,7 +245,7 @@ public final class IrisMetalTerrainBridge {
                     shadowTargets.depthSampler(depthIndex, comparison)
             );
         }
-        int shadowColorTarget = shadowColorIndex(name);
+        int shadowColorTarget = IrisMetalRenderTargets.shadowColorIndex(name);
         if (shadowColorTarget >= 0) {
             return new MetalRenderPass.TextureViewAndSampler(
                     shadowTargets.colorView(shadowColorTarget, context.pipeline().shadowReadSnapshot()),
@@ -225,30 +255,11 @@ public final class IrisMetalTerrainBridge {
         return null;
     }
 
-    private static int shadowColorIndex(final String name) {
-        if (name.equals("shadowcolor")) {
-            return 0;
+    /** Records the first custom-texture hit per (kind, sampler) so a probe run can confirm the override. */
+    private static void recordCustomSamplerOverride(final String where, final String name) {
+        if (REPORTED_CUSTOM_SAMPLERS.add(where + ":" + name)) {
+            MetalProbeReport.record(where + " sampler custom name=" + name + " stage=gbuffers");
         }
-        if (!name.startsWith("shadowcolor") || name.startsWith("shadowcolorimg")) {
-            return -1;
-        }
-        try {
-            return Integer.parseInt(name.substring("shadowcolor".length()));
-        } catch (NumberFormatException ignored) {
-            return -1;
-        }
-    }
-
-    private static int renderTargetIndex(final String name) {
-        if (name.startsWith("colortex")) {
-            try {
-                return Integer.parseInt(name.substring("colortex".length()));
-            } catch (NumberFormatException ignored) {
-                return -1;
-            }
-        }
-        return net.irisshaders.iris.shaderpack.properties.PackRenderTargetDirectives
-                .LEGACY_RENDER_TARGETS.indexOf(name);
     }
 
     private static @Nullable TerrainContext currentContext() {

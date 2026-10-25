@@ -35,6 +35,16 @@ import java.nio.IntBuffer;
  * 返回空串 {@code ""}（与 Iris 对"无更多信息"的处理一致，见
  * {@code ProgramUniforms.buildUniforms} 的 {@code name.isEmpty()} 分支）。
  *
+ * <p><b>Buffer blending 已连接。</b>{@link #metallum$bufferBlendingViaPso}
+ * 让 {@code supportsBufferBlending()} 在 Metal 上返回 {@code true}：per-attachment
+ * blend state 由 PSO 承载（{@code IrisMetalCompiledPrograms.colorTargets}
+ * 将 {@code blend.*} override 按 DRAWBUFFERS slot 映射进每个 color attachment，
+ * 最终落到 {@code MetalCompiledRenderPipeline.createPipeline}），不经过 GL 的
+ * {@code glEnablei}/{@code glBlendFuncSeparateiARB}。故
+ * {@code disableBufferBlend}/{@code enableBufferBlend}/{@code blendFuncSeparatei}
+ * 在 Metal 上 no-op。其余四个能力位（SSBO / image load-store / compute /
+ * tessellation）仍未连接，保持 fail-closed。
+ *
  * <p><b>Metal 激活条件。</b>{@link MetalActive#isMetalActive()}。
  * <b>非 Metal 路径完全 no-op</b>：Metal 未激活时立即 return，Iris 原始 GL
  * 调用不受影响。{@code program/shader <= 0} 在合法 GL 路径下本就不会被合法
@@ -54,7 +64,6 @@ public class IrisRenderSystemMixin {
             method = {
                     "supportsSSBO",
                     "supportsImageLoadStore",
-                    "supportsBufferBlending",
                     "supportsCompute",
                     "supportsTesselation"
             },
@@ -67,6 +76,34 @@ public class IrisRenderSystemMixin {
     ) {
         if (MetalActive.isMetalActive()) {
             cir.setReturnValue(false);
+        }
+    }
+
+    @Inject(method = "supportsBufferBlending", at = @At("HEAD"), cancellable = true, remap = false)
+    private static void metallum$bufferBlendingViaPso(final CallbackInfoReturnable<Boolean> cir) {
+        if (MetalActive.isMetalActive()) {
+            cir.setReturnValue(true); // Metal: per-attachment blend 由 PSO 承载
+        }
+    }
+
+    @Inject(method = {"disableBufferBlend", "enableBufferBlend"}, at = @At("HEAD"), cancellable = true, remap = false)
+    private static void metallum$skipGlBufferBlendOnMetal(final int buffer, final CallbackInfo ci) {
+        if (MetalActive.isMetalActive()) {
+            ci.cancel();
+        }
+    }
+
+    @Inject(method = "blendFuncSeparatei", at = @At("HEAD"), cancellable = true, remap = false)
+    private static void metallum$skipGlBlendFuncSeparateiOnMetal(
+            final int buffer,
+            final int srcRGB,
+            final int dstRGB,
+            final int srcAlpha,
+            final int dstAlpha,
+            final CallbackInfo ci
+    ) {
+        if (MetalActive.isMetalActive()) {
+            ci.cancel();
         }
     }
 

@@ -98,14 +98,65 @@ final class IrisMetalPingPongTargetsIntegrationTest {
             assertPixel(targets.readTexture(0), 0, 255);
             assertPixel(targets.writeTexture(0), 255, 0);
 
-            targets.resize(WIDTH * 2, HEIGHT * 2);
+            targets.resize(new int[]{WIDTH * 2}, new int[]{HEIGHT * 2});
             assertTrue(oldMain.isClosed());
             assertTrue(oldAlt.isClosed());
             assertFalse(targets.isFlipped(0));
             assertFalse(targets.flippedAtLeastOnce(0));
             assertFalse(targets.readMipmapsEnabled(0));
             assertEquals(WIDTH * 2, targets.readTexture(0).getWidth(0));
+            assertEquals(WIDTH * 2, targets.width(0));
             assertNotSame(oldMain, targets.readTexture(0));
+        }
+    }
+
+    @Test
+    void perTargetExtentsAllocateScaleAndResizeIndependently() {
+        try (IrisMetalPingPongTargets targets = new IrisMetalPingPongTargets(
+                device,
+                "iris-test-scaled",
+                new GpuFormat[]{GpuFormat.RGBA8_UNORM, GpuFormat.RGBA8_UNORM, GpuFormat.RGBA8_UNORM},
+                new int[]{WIDTH, WIDTH / 2, WIDTH * 2},
+                new int[]{HEIGHT, HEIGHT / 2, HEIGHT * 2},
+                Set.of(1)
+        )) {
+            // Each target and both ping-pong sides allocate at their own extent.
+            assertEquals(WIDTH, targets.width(0));
+            assertEquals(HEIGHT, targets.height(0));
+            assertEquals(WIDTH / 2, targets.width(1));
+            assertEquals(HEIGHT / 2, targets.height(1));
+            assertEquals(WIDTH * 2, targets.width(2));
+            assertEquals(HEIGHT * 2, targets.height(2));
+            assertEquals(WIDTH / 2, targets.readTexture(1).getWidth(0));
+            assertEquals(HEIGHT / 2, targets.readTexture(1).getHeight(0));
+            assertEquals(WIDTH / 2, targets.altTexture(1).getWidth(0));
+            assertEquals(HEIGHT / 2, targets.altTexture(1).getHeight(0));
+            assertEquals(WIDTH * 2, targets.mainTexture(2).getWidth(0));
+            // Mip chains are per target: target 1 is mipmapped at its scaled size.
+            assertEquals(1, targets.mainTexture(0).getMipLevels());
+            assertTrue(targets.mainTexture(1).getMipLevels() > 1);
+            assertEquals(1, targets.mainTexture(2).getMipLevels());
+
+            // A pass into the scaled target renders at the scaled render area.
+            render(targets.writeView(1), pipeline("red"), WIDTH / 2, HEIGHT / 2);
+            assertPixel(targets.writeTexture(1), 255, 0);
+
+            targets.resize(
+                    new int[]{WIDTH * 2, WIDTH / 4, WIDTH},
+                    new int[]{HEIGHT * 2, HEIGHT / 4, HEIGHT}
+            );
+            assertEquals(WIDTH * 2, targets.readTexture(0).getWidth(0));
+            assertEquals(WIDTH / 4, targets.width(1));
+            assertEquals(HEIGHT / 4, targets.height(1));
+            assertEquals(WIDTH, targets.readTexture(2).getWidth(0));
+            assertEquals(WIDTH, targets.width(2));
+
+            // The uniform convenience overload still resizes every target.
+            targets.resize(WIDTH, HEIGHT);
+            assertEquals(WIDTH, targets.width(1));
+            assertEquals(HEIGHT, targets.height(1));
+            assertEquals(WIDTH, targets.width(2));
+            assertEquals(HEIGHT, targets.height(2));
         }
     }
 
@@ -119,6 +170,7 @@ final class IrisMetalPingPongTargetsIntegrationTest {
                 HEIGHT,
                 Map.of(),
                 Set.of(),
+                Map.of(),
                 Map.of(),
                 8,
                 null

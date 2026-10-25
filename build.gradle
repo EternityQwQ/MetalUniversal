@@ -63,6 +63,9 @@ dependencies {
 
 test {
 	useJUnitPlatform()
+	testLogging {
+		exceptionFormat = "full"
+	}
 	exclude "**/MetalMrtBackendIntegrationTest.class"
 	exclude "**/MetalComputeBackendIntegrationTest.class"
 	exclude "**/MetalGenericVertexAttributeIntegrationTest.class"
@@ -70,6 +73,7 @@ test {
 	exclude "**/MetalIrisCustomTexturesIntegrationTest.class"
 	exclude "**/MetalIrisNoiseTextureIntegrationTest.class"
 	exclude "**/IrisMetalCenterDepthSamplerTest.class"
+	exclude "**/MellowCustomTexturesIntegrationTest.class"
 }
 
 processResources {
@@ -189,6 +193,7 @@ tasks.register("metalIrisTexturesIntegrationTest", Test) {
 		includeTestsMatching "com.metallum.client.metal.render.MetalIrisCustomTexturesIntegrationTest"
 		includeTestsMatching "com.metallum.client.metal.render.MetalIrisNoiseTextureIntegrationTest"
 		includeTestsMatching "com.metallum.client.metal.render.IrisMetalCenterDepthSamplerTest"
+		includeTestsMatching "com.metallum.client.metal.render.MellowCustomTexturesIntegrationTest"
 	}
 	jvmArgs "--enable-native-access=ALL-UNNAMED"
 	environment "MTL_DEBUG_LAYER", "1"

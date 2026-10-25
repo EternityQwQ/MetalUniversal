@@ -9,6 +9,10 @@ import com.mojang.blaze3d.textures.FilterMode;
 import com.mojang.blaze3d.textures.GpuTexture;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
+import net.irisshaders.iris.features.FeatureFlags;
+import net.irisshaders.iris.shaderpack.programs.ProgramSet;
+import net.irisshaders.iris.shaderpack.properties.PackShadowDirectives;
+import org.joml.Vector4f;
 import org.joml.Vector4fc;
 import org.jspecify.annotations.Nullable;
 
@@ -34,6 +38,8 @@ final class IrisMetalShadowTargets implements AutoCloseable {
     private final MetalGpuSampler[] depthSamplers;
     private final MetalGpuSampler[] depthCompareSamplers;
     private final boolean[] colorMipmapped;
+    private final boolean[] colorClear;
+    private final Vector4fc[] colorClearColors;
     private final boolean[] depthMipmapped;
     @Nullable
     private final MetalDepthMipmapGenerator depthMipmapGenerator;
@@ -43,22 +49,6 @@ final class IrisMetalShadowTargets implements AutoCloseable {
     private MetalGpuTextureView shadowDepthNoTranslucentsView;
     private int resolution;
     private boolean closed;
-
-    IrisMetalShadowTargets(
-            final MetalDevice device,
-            final GpuFormat[] shadowColorFormats,
-            final int resolution
-    ) {
-        this(
-                device,
-                shadowColorFormats,
-                resolution,
-                new boolean[shadowColorFormats.length],
-                new boolean[shadowColorFormats.length],
-                new boolean[2],
-                new boolean[2]
-        );
-    }
 
     IrisMetalShadowTargets(
             final MetalDevice device,
@@ -88,10 +78,40 @@ final class IrisMetalShadowTargets implements AutoCloseable {
             final boolean[] nearestDepth,
             final boolean[] mipmappedDepth
     ) {
+        this(
+                device,
+                shadowColorFormats,
+                resolution,
+                nearestColor,
+                colorMipmapped,
+                nearestDepth,
+                mipmappedDepth,
+                allSet(shadowColorFormats.length),
+                whiteColors(shadowColorFormats.length)
+        );
+    }
+
+    IrisMetalShadowTargets(
+            final MetalDevice device,
+            final GpuFormat[] shadowColorFormats,
+            final int resolution,
+            final boolean[] nearestColor,
+            final boolean[] colorMipmapped,
+            final boolean[] nearestDepth,
+            final boolean[] mipmappedDepth,
+            final boolean[] colorClear,
+            final Vector4fc[] colorClearColors
+    ) {
         if (nearestColor.length != shadowColorFormats.length
                 || colorMipmapped.length != shadowColorFormats.length) {
             throw new IllegalArgumentException(
                     "One color sampling and mipmap mode is required per shadowcolor target"
+            );
+        }
+        if (colorClear.length != shadowColorFormats.length
+                || colorClearColors.length != shadowColorFormats.length) {
+            throw new IllegalArgumentException(
+                    "One clear mode and clear color is required per shadowcolor target"
             );
         }
         if (nearestDepth.length != 2 || mipmappedDepth.length != 2) {
@@ -109,6 +129,8 @@ final class IrisMetalShadowTargets implements AutoCloseable {
         refreshColorSides();
         this.colorSamplers = new MetalGpuSampler[shadowColorFormats.length];
         this.colorMipmapped = colorMipmapped.clone();
+        this.colorClear = colorClear.clone();
+        this.colorClearColors = colorClearColors.clone();
         for (int index = 0; index < colorSamplers.length; index++) {
             colorSamplers[index] = createSampler(nearestColor[index], colorMipmapped[index], false);
         }
@@ -151,6 +173,39 @@ final class IrisMetalShadowTargets implements AutoCloseable {
             }
         }
         return result;
+    }
+
+    private static boolean[] allSet(final int length) {
+        boolean[] flags = new boolean[length];
+        java.util.Arrays.fill(flags, true);
+        return flags;
+    }
+
+    private static Vector4fc[] whiteColors(final int length) {
+        Vector4fc[] colors = new Vector4fc[length];
+        java.util.Arrays.fill(colors, new Vector4f(1.0F, 1.0F, 1.0F, 1.0F));
+        return colors;
+    }
+
+    /**
+     * Shadowcolor formats shared by target creation and shadow-program PSO
+     * compilation; same source as {@code IrisMetalWorldResources.createShadowTargets}
+     * so the caster pass and the compiled pipelines cannot drift.
+     */
+    static GpuFormat[] colorFormats(final ProgramSet programSet) {
+        PackShadowDirectives shadow = programSet.getPackDirectives().getShadowDirectives();
+        int targetCount = programSet.getPack().hasFeature(FeatureFlags.HIGHER_SHADOWCOLOR)
+                ? PackShadowDirectives.MAX_SHADOW_COLOR_BUFFERS_IRIS
+                : PackShadowDirectives.MAX_SHADOW_COLOR_BUFFERS_OF;
+        GpuFormat[] formats = new GpuFormat[targetCount];
+        for (int index = 0; index < targetCount; index++) {
+            PackShadowDirectives.SamplingSettings settings = shadow.getColorSamplingSettings().get(index);
+            if (settings == null) {
+                settings = new PackShadowDirectives.SamplingSettings();
+            }
+            formats[index] = IrisMetalRenderTargetFormats.fromInternalName(settings.getFormat().name());
+        }
+        return formats;
     }
 
     private void refreshColorSides() {
@@ -243,6 +298,19 @@ final class IrisMetalShadowTargets implements AutoCloseable {
         return colorTargets.format(checkColorIndex(index));
     }
 
+    /** Whether this shadowcolor target should be cleared at the start of the shadow pass. */
+    boolean clearsColor(final int index) {
+        ensureOpen();
+        return this.colorClear[checkColorIndex(index)];
+    }
+
+    /** The pack's clear color for this shadowcolor target. */
+    Vector4fc colorClearColor(final int index) {
+        ensureOpen();
+        Vector4fc color = this.colorClearColors[checkColorIndex(index)];
+        return color == null ? new Vector4f(1.0F, 1.0F, 1.0F, 1.0F) : color;
+    }
+
     MetalGpuTexture colorTexture(final int index, final BitSet readsFromAlt) {
         ensureOpen();
         validateSnapshot(readsFromAlt);
@@ -261,10 +329,16 @@ final class IrisMetalShadowTargets implements AutoCloseable {
         return resolution;
     }
 
+    /**
+     * Copies shadowtex0 into shadowtex1, the pack's "no translucent" depth map.
+     * Called after the opaque terrain and entity caster passes at the
+     * opaque/translucent boundary, and at frame start (and in the no-caster
+     * fallback clear) to seed shadowtex1 with the cleared far value.
+     */
     void captureNoTranslucentsDepth(final MetalCommandEncoder encoder) {
         ensureOpen();
         encoder.copyTextureToTexture(
-                shadowDepth, shadowDepthNoTranslucents, 0, 0, 0, 0, 0, resolution, resolution
+                shadowDepth, shadowDepthNoTranslucents, 0, 0, 0, 0, 0, resolution, resolution, "shadow.depth"
         );
     }
 
@@ -278,13 +352,45 @@ final class IrisMetalShadowTargets implements AutoCloseable {
         }
     }
 
-    IrisMetalRenderTargets.RenderPassDescriptorWithViews createShadowWriteDescriptor(
+    /**
+     * Color-only clear descriptor for one ping-pong side of the requested
+     * shadowcolor targets (upstream clears each clear=true target on both
+     * sides; the depth attachment is untouched).
+     */
+    IrisMetalRenderTargets.RenderPassDescriptorWithViews createShadowColorClearDescriptor(
             final String label,
             final int[] drawBuffers,
-            @Nullable final Vector4fc[] clearColors,
-            @Nullable final Double clearDepth
+            final Vector4fc[] clearColors,
+            final boolean alt
     ) {
-        return createShadowGbufferDescriptor(label, drawBuffers, clearColors, clearDepth);
+        ensureOpen();
+        if (drawBuffers.length == 0 || clearColors.length != drawBuffers.length) {
+            throw new IllegalArgumentException(
+                    "A shadow color clear requires one clear color per target"
+            );
+        }
+        RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> label);
+        MetalGpuTextureView[] views = new MetalGpuTextureView[drawBuffers.length];
+        IrisMetalRenderTargets.AttachmentViewOwnership owned =
+                new IrisMetalRenderTargets.AttachmentViewOwnership();
+        boolean[] written = new boolean[colorTargets.targetCount()];
+        for (int slot = 0; slot < drawBuffers.length; slot++) {
+            int target = validateDrawTarget(drawBuffers[slot], written, "Shadow color clear");
+            // Full-range view by default: the same native handle whatever the
+            // pass order, so the color clear shares the caster's encoder
+            // instead of reopening it (see MetalRenderPolicy).
+            MetalGpuTextureView fullView = alt ? colorAltViews[target] : colorMainViews[target];
+            MetalGpuTextureView view = IrisMetalRenderTargets.attachmentView(
+                    fullView, alt ? colorAlt[target] : colorMain[target]
+            );
+            owned.add(fullView, view);
+            views[slot] = view;
+            descriptor.withColorAttachment(view, Optional.of(clearColors[slot]));
+        }
+        descriptor.withRenderArea(new RenderPass.RenderArea(0, 0, resolution, resolution));
+        return new IrisMetalRenderTargets.RenderPassDescriptorWithViews(
+                descriptor, views, owned.toArray()
+        );
     }
 
     IrisMetalRenderTargets.RenderPassDescriptorWithViews createShadowGbufferDescriptor(
@@ -299,10 +405,17 @@ final class IrisMetalShadowTargets implements AutoCloseable {
         }
         RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> label);
         MetalGpuTextureView[] views = new MetalGpuTextureView[drawBuffers.length + 1];
+        IrisMetalRenderTargets.AttachmentViewOwnership owned =
+                new IrisMetalRenderTargets.AttachmentViewOwnership();
         boolean[] written = new boolean[colorTargets.targetCount()];
         for (int slot = 0; slot < drawBuffers.length; slot++) {
             int target = validateDrawTarget(drawBuffers[slot], written, "Shadow DRAWBUFFERS");
-            MetalGpuTextureView view = new MetalGpuTextureView(colorMain[target], 0, 1);
+            // Caster draws write the fixed "main" side; a full-range attachment
+            // view keeps the encoder alive across consecutive draws.
+            MetalGpuTextureView view = IrisMetalRenderTargets.attachmentView(
+                    colorMainViews[target], colorMain[target]
+            );
+            owned.add(colorMainViews[target], view);
             views[slot] = view;
             descriptor.withColorAttachment(
                     view,
@@ -311,14 +424,17 @@ final class IrisMetalShadowTargets implements AutoCloseable {
                             : Optional.of(clearColors[slot])
             );
         }
-        MetalGpuTextureView depthView = new MetalGpuTextureView(shadowDepth, 0, 1);
+        MetalGpuTextureView depthView = IrisMetalRenderTargets.attachmentView(shadowDepthView, shadowDepth);
+        owned.add(shadowDepthView, depthView);
         views[drawBuffers.length] = depthView;
         descriptor.withDepthAttachment(
                 depthView,
                 clearDepth == null ? OptionalDouble.empty() : OptionalDouble.of(clearDepth)
         );
         descriptor.withRenderArea(new RenderPass.RenderArea(0, 0, resolution, resolution));
-        return new IrisMetalRenderTargets.RenderPassDescriptorWithViews(descriptor, views);
+        return new IrisMetalRenderTargets.RenderPassDescriptorWithViews(
+                descriptor, views, owned.toArray()
+        );
     }
 
     IrisMetalRenderTargets.RenderPassDescriptorWithViews createShadowCompositeDescriptor(
@@ -344,18 +460,27 @@ final class IrisMetalShadowTargets implements AutoCloseable {
         }
         RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> label);
         MetalGpuTextureView[] views = new MetalGpuTextureView[drawBuffers.length];
+        IrisMetalRenderTargets.AttachmentViewOwnership owned =
+                new IrisMetalRenderTargets.AttachmentViewOwnership();
         boolean[] written = new boolean[colorTargets.targetCount()];
         for (int slot = 0; slot < drawBuffers.length; slot++) {
             int target = validateDrawTarget(drawBuffers[slot], written, "Shadow composite DRAWBUFFERS");
-            MetalGpuTexture destination = readsFromAlt.get(target) ? colorMain[target] : colorAlt[target];
-            MetalGpuTextureView view = new MetalGpuTextureView(destination, 0, 1);
+            MetalGpuTextureView fullView = readsFromAlt.get(target)
+                    ? colorMainViews[target]
+                    : colorAltViews[target];
+            MetalGpuTextureView view = IrisMetalRenderTargets.attachmentView(
+                    fullView, readsFromAlt.get(target) ? colorMain[target] : colorAlt[target]
+            );
+            owned.add(fullView, view);
             views[slot] = view;
             descriptor.withColorAttachment(view, Optional.empty());
         }
         descriptor.withRenderArea(new RenderPass.RenderArea(
                 viewportX, viewportY, viewportWidth, viewportHeight
         ));
-        return new IrisMetalRenderTargets.RenderPassDescriptorWithViews(descriptor, views);
+        return new IrisMetalRenderTargets.RenderPassDescriptorWithViews(
+                descriptor, views, owned.toArray()
+        );
     }
 
     void publishFlipState(final BitSet finalReadsFromAlt) {
@@ -364,6 +489,19 @@ final class IrisMetalShadowTargets implements AutoCloseable {
         colorTargets.restore(finalReadsFromAlt);
     }
 
+    /**
+     * Resizes the shadowcolor ping-pong targets and both depth textures.
+     *
+     * <p>TODO(M6.4): no production caller. The shadow resolution comes from the
+     * pack's {@code shadow.resolution} directive when the generation is built,
+     * and the pinned upstream tree has no runtime shadow-resolution override
+     * (only shadow distance), so changing shader settings or packs rebuilds the
+     * whole generation (a new {@link IrisMetalWorldResources}) instead of
+     * calling this. If a runtime resolution override is ever added, it must
+     * call this and reset the execution graph's {@code shadowFullClearRequired}
+     * (a resize requires clearing every shadowcolor target, as upstream's
+     * {@code isFullClearRequired} does).</p>
+     */
     void resize(final int newResolution) {
         ensureOpen();
         if (newResolution == resolution) {

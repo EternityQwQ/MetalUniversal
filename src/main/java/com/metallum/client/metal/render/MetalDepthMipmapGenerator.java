@@ -88,7 +88,8 @@ final class MetalDepthMipmapGenerator implements AutoCloseable {
                         "sourceDepth",
                         0,
                         MetalCompiledRenderPipeline.STAGE_VERTEX,
-                        null
+                        null,
+                        0
                 )),
                 false,
                 PolygonMode.FILL,
@@ -131,7 +132,7 @@ final class MetalDepthMipmapGenerator implements AutoCloseable {
             int sourceWidth = texture.getWidth(sourceLevel);
             int sourceHeight = texture.getHeight(sourceLevel);
             encoder.copyTextureToTexture(
-                    texture, scratch, sourceLevel, 0, 0, 0, 0, sourceWidth, sourceHeight
+                    texture, scratch, sourceLevel, 0, 0, 0, 0, sourceWidth, sourceHeight, "depth.mip"
             );
 
             try (MetalGpuTextureView sourceView = new MetalGpuTextureView(scratch, sourceLevel, 1);

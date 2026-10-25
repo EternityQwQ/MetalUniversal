@@ -1,5 +1,6 @@
 package com.metallum.client.metal.render;
 
+import com.metallum.Metallum;
 import com.metallum.client.metal.render.mtl.MTLSamplerMipFilter;
 import com.mojang.blaze3d.GpuFormat;
 import com.mojang.blaze3d.systems.RenderPass;
@@ -11,15 +12,20 @@ import com.mojang.blaze3d.textures.GpuTexture;
 import com.mojang.blaze3d.textures.GpuTextureView;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
+import net.irisshaders.iris.shaderpack.properties.PackDirectives;
+import net.irisshaders.iris.shaderpack.properties.PackRenderTargetDirectives;
 import net.irisshaders.iris.shaderpack.properties.PackRenderTargetDirectives.RenderTargetSettings;
 import org.joml.Vector4f;
 import org.joml.Vector4fc;
 import org.jspecify.annotations.Nullable;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalDouble;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /** Generation-owned Iris colortex ping-pong and depthtex0/1/2 resources. */
 @Environment(EnvType.CLIENT)
@@ -29,9 +35,15 @@ final class IrisMetalRenderTargets implements AutoCloseable {
             | GpuTexture.USAGE_COPY_SRC
             | GpuTexture.USAGE_COPY_DST;
 
+    /** {@code metallum.iris.debug.magentaClear}: colortex0 clear color for unwritten-region bisection. */
+    private static final Vector4fc MAGENTA_CLEAR_COLOR = new Vector4f(1.0F, 0.0F, 1.0F, 1.0F);
+
     private final MetalDevice device;
     private final IrisMetalPingPongTargets colorTargets;
     private final Map<Integer, RenderTargetSettings> targetSettings;
+    /** Pack directives backing per-target {@code size.buffer} extents; null on the uniform/test path. */
+    private final @Nullable PackDirectives directives;
+    private IrisMetalRenderTargetExtents.Extents extents;
     private MetalGpuTexture mainDepth;
     private MetalGpuTexture noTranslucentsDepth;
     private MetalGpuTexture noHandDepth;
@@ -74,9 +86,31 @@ final class IrisMetalRenderTargets implements AutoCloseable {
             final Map<Integer, RenderTargetSettings> targetSettings,
             final Set<Integer> mipmappedTargets
     ) {
+        this(device, colorFormats, width, height, targetSettings, mipmappedTargets, null);
+    }
+
+    /**
+     * Pack-path constructor: resolves every target's extent from the pack's
+     * {@code size.buffer.*} directives (via
+     * {@link IrisMetalRenderTargetExtents}) instead of using one uniform size.
+     */
+    IrisMetalRenderTargets(
+            final MetalDevice device,
+            final GpuFormat[] colorFormats,
+            final int width,
+            final int height,
+            final Map<Integer, RenderTargetSettings> targetSettings,
+            final Set<Integer> mipmappedTargets,
+            final @Nullable PackDirectives directives
+    ) {
         this.device = device;
+        this.directives = directives;
+        this.extents = IrisMetalRenderTargetExtents.from(
+                directives, colorFormats.length, width, height
+        );
         this.colorTargets = new IrisMetalPingPongTargets(
-                device, "iris-colortex", colorFormats, width, height, mipmappedTargets
+                device, "iris-colortex", colorFormats,
+                this.extents.widths(), this.extents.heights(), mipmappedTargets
         );
         this.targetSettings = Map.copyOf(targetSettings);
         this.colorSampler = sampler(FilterMode.LINEAR, MTLSamplerMipFilter.NotMipmapped);
@@ -84,7 +118,24 @@ final class IrisMetalRenderTargets implements AutoCloseable {
         this.colorMipSampler = sampler(FilterMode.LINEAR, MTLSamplerMipFilter.Linear);
         this.nearestMipSampler = sampler(FilterMode.NEAREST, MTLSamplerMipFilter.Linear);
         createDepthTextures(width, height);
+        reportExtentsOnce();
     }
+
+    private void reportExtentsOnce() {
+        if (!MetalDebugSwitches.SIZE_BUFFER || !extents.anyNonBase()) {
+            return;
+        }
+        String summary = extents.nonBaseSummary();
+        if (REPORTED_EXTENTS.add(summary + "@" + extents.baseWidth() + "x" + extents.baseHeight())) {
+            Metallum.LOGGER.info(
+                    "[metallum-iris] size.buffer extents: {} (base {}x{})",
+                    summary, extents.baseWidth(), extents.baseHeight()
+            );
+        }
+    }
+
+    /** Dedupes the one-line extents report across frames/resizes. */
+    private static final Set<String> REPORTED_EXTENTS = ConcurrentHashMap.newKeySet();
 
     private MetalGpuSampler sampler(final FilterMode filter, final MTLSamplerMipFilter mipFilter) {
         return new MetalGpuSampler(
@@ -112,6 +163,9 @@ final class IrisMetalRenderTargets implements AutoCloseable {
             Vector4fc clear = settings == null || settings.getClearColor().isEmpty()
                     ? defaultClearColor(index, fog)
                     : settings.getClearColor().get();
+            if (MetalDebugSwitches.MAGENTA_CLEAR && index == 0) {
+                clear = MAGENTA_CLEAR_COLOR;
+            }
             encoder.clearColorTexture(colorTargets.mainTexture(index), clear);
             encoder.clearColorTexture(colorTargets.altTexture(index), clear);
         }
@@ -127,6 +181,47 @@ final class IrisMetalRenderTargets implements AutoCloseable {
             return new Vector4f(1.0F, 1.0F, 1.0F, 1.0F);
         }
         return new Vector4f(0.0F, 0.0F, 0.0F, 0.0F);
+    }
+
+    /**
+     * Resolves a pack sampler name to its logical colortex index. Accepts
+     * {@code colortexN} directly and Iris's legacy render-target aliases
+     * ({@code gcolor}..{@code gaux4}) through
+     * {@link PackRenderTargetDirectives#LEGACY_RENDER_TARGETS}, whose list
+     * position <em>is</em> the colortex index. Names outside both tables (and a
+     * {@code colortex} prefix followed by a non-number) return {@code -1}.
+     */
+    static int renderTargetIndex(final String name) {
+        if (name.startsWith("colortex")) {
+            try {
+                return Integer.parseInt(name.substring("colortex".length()));
+            } catch (NumberFormatException ignored) {
+                return -1;
+            }
+        }
+        return PackRenderTargetDirectives.LEGACY_RENDER_TARGETS.indexOf(name);
+    }
+
+    /**
+     * Resolves a pack sampler name to its logical shadowcolor index: the
+     * explicit {@code shadowcolor} is 0, {@code shadowcolorN} is N, and
+     * anything else ({@code shadowcolorimg}, a non-numeric suffix, a
+     * different prefix) is {@code -1}. Callers bounds-check the result against
+     * the generation's shadowcolor target count. Shared by the world/terrain
+     * bridges and the execution graph so all three agree on the mapping.
+     */
+    static int shadowColorIndex(final String name) {
+        if (name.equals("shadowcolor")) {
+            return 0;
+        }
+        if (!name.startsWith("shadowcolor") || name.startsWith("shadowcolorimg")) {
+            return -1;
+        }
+        try {
+            return Integer.parseInt(name.substring("shadowcolor".length()));
+        } catch (NumberFormatException ignored) {
+            return -1;
+        }
     }
 
     private void createDepthTextures(final int newWidth, final int newHeight) {
@@ -223,32 +318,44 @@ final class IrisMetalRenderTargets implements AutoCloseable {
         return height;
     }
 
+    /** Pixel width of one logical colortex target (base size unless {@code size.buffer} overrides it). */
+    int targetWidth(final int logicalTarget) {
+        ensureOpen();
+        return colorTargets.width(logicalTarget);
+    }
+
+    /** Pixel height of one logical colortex target (base size unless {@code size.buffer} overrides it). */
+    int targetHeight(final int logicalTarget) {
+        ensureOpen();
+        return colorTargets.height(logicalTarget);
+    }
+
     void captureNoTranslucentsDepth(final MetalCommandEncoder encoder) {
         ensureOpen();
-        encoder.copyTextureToTexture(mainDepth, noTranslucentsDepth, 0, 0, 0, 0, 0, width, height);
+        encoder.copyTextureToTexture(mainDepth, noTranslucentsDepth, 0, 0, 0, 0, 0, width, height, "depth.depthtex1");
     }
 
     void captureNoTranslucentsDepth(final MetalCommandEncoder encoder, final GpuTexture sourceDepth) {
         ensureOpen();
         checkDepthExtent(sourceDepth);
-        encoder.copyTextureToTexture(sourceDepth, noTranslucentsDepth, 0, 0, 0, 0, 0, width, height);
+        encoder.copyTextureToTexture(sourceDepth, noTranslucentsDepth, 0, 0, 0, 0, 0, width, height, "depth.depthtex1");
     }
 
     void captureMainDepth(final MetalCommandEncoder encoder, final GpuTexture sourceDepth) {
         ensureOpen();
         checkDepthExtent(sourceDepth);
-        encoder.copyTextureToTexture(sourceDepth, mainDepth, 0, 0, 0, 0, 0, width, height);
+        encoder.copyTextureToTexture(sourceDepth, mainDepth, 0, 0, 0, 0, 0, width, height, "depth.depthtex0");
     }
 
     void captureNoHandDepth(final MetalCommandEncoder encoder) {
         ensureOpen();
-        encoder.copyTextureToTexture(mainDepth, noHandDepth, 0, 0, 0, 0, 0, width, height);
+        encoder.copyTextureToTexture(mainDepth, noHandDepth, 0, 0, 0, 0, 0, width, height, "depth.depthtex2");
     }
 
     void captureNoHandDepth(final MetalCommandEncoder encoder, final GpuTexture sourceDepth) {
         ensureOpen();
         checkDepthExtent(sourceDepth);
-        encoder.copyTextureToTexture(sourceDepth, noHandDepth, 0, 0, 0, 0, 0, width, height);
+        encoder.copyTextureToTexture(sourceDepth, noHandDepth, 0, 0, 0, 0, 0, width, height, "depth.depthtex2");
     }
 
     private void checkDepthExtent(final GpuTexture sourceDepth) {
@@ -256,6 +363,24 @@ final class IrisMetalRenderTargets implements AutoCloseable {
             throw new IllegalArgumentException(
                     "Scene depth extent " + sourceDepth.getWidth(0) + "x" + sourceDepth.getHeight(0)
                             + " does not match Iris targets " + width + "x" + height
+            );
+        }
+    }
+
+    /**
+     * Depth-attached passes (terrain/world gbuffer draws) cannot write a scaled
+     * colortex target: Metal requires every attachment of a render pass to have
+     * the same dimensions, while the depth attachment is always the base
+     * extent.
+     */
+    private void requireBaseExtent(final String passKind, final String label, final int logicalTarget) {
+        int targetWidth = colorTargets.width(logicalTarget);
+        int targetHeight = colorTargets.height(logicalTarget);
+        if (targetWidth != width || targetHeight != height) {
+            throw new IllegalStateException(
+                    "Iris " + passKind + " pass '" + label + "' writes scaled colortex" + logicalTarget
+                            + " (" + targetWidth + "x" + targetHeight + ") but attaches scene depth ("
+                            + width + "x" + height + "); depth-attached passes must use base-size draw buffers"
             );
         }
     }
@@ -278,12 +403,38 @@ final class IrisMetalRenderTargets implements AutoCloseable {
         if (readTargets != null) {
             colorTargets.checkNoFeedbackLoop(drawBuffers, readTargets);
         }
+        int targetWidth = targetWidth(drawBuffers[0]);
+        int targetHeight = targetHeight(drawBuffers[0]);
+        for (int slot = 1; slot < drawBuffers.length; slot++) {
+            int width = targetWidth(drawBuffers[slot]);
+            int height = targetHeight(drawBuffers[slot]);
+            if (width != targetWidth || height != targetHeight) {
+                // Upstream CompositeRenderer.recalculateSizes rejects this too.
+                throw new IllegalStateException(
+                        "Iris pass '" + label + "' draw buffers must all have the same size: colortex"
+                                + drawBuffers[0] + " " + targetWidth + "x" + targetHeight
+                                + " vs colortex" + drawBuffers[slot] + " " + width + "x" + height
+                );
+            }
+        }
+        if (withDepth && (targetWidth != width || targetHeight != height)) {
+            throw new IllegalStateException(
+                    "Iris pass '" + label + "' attaches scene depth (" + width + "x" + height
+                            + ") but writes scaled draw buffer(s) at " + targetWidth + "x" + targetHeight
+                            + "; depth-attached passes must use base-size draw buffers"
+            );
+        }
         RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> label);
         MetalGpuTextureView[] views = new MetalGpuTextureView[drawBuffers.length + (withDepth ? 1 : 0)];
+        AttachmentViewOwnership owned = new AttachmentViewOwnership();
         for (int slot = 0; slot < drawBuffers.length; slot++) {
-            MetalGpuTextureView view = new MetalGpuTextureView(
-                    colorTargets.writeTexture(drawBuffers[slot]), 0, 1
-            );
+            MetalGpuTexture writeTexture = colorTargets.writeTexture(drawBuffers[slot]);
+            MetalGpuTextureView fullView = colorTargets.writeView(drawBuffers[slot]);
+            // Full-range attachment view by default (see MetalRenderPolicy):
+            // the cached view keeps one native handle across passes, so the
+            // encoder is not reopened; rendering still only writes level 0.
+            MetalGpuTextureView view = attachmentView(fullView, writeTexture);
+            owned.add(fullView, view);
             views[slot] = view;
             descriptor.withColorAttachment(
                     view,
@@ -293,15 +444,22 @@ final class IrisMetalRenderTargets implements AutoCloseable {
             );
         }
         if (withDepth) {
-            MetalGpuTextureView depthView = new MetalGpuTextureView(mainDepth, 0, 1);
+            MetalGpuTextureView fullDepthView = mainDepthView();
+            MetalGpuTextureView depthView = attachmentView(fullDepthView, mainDepth);
+            owned.add(fullDepthView, depthView);
             views[drawBuffers.length] = depthView;
             descriptor.withDepthAttachment(
                     depthView,
                     clearDepth == null ? OptionalDouble.empty() : OptionalDouble.of(clearDepth)
             );
         }
-        descriptor.withRenderArea(new RenderPass.RenderArea(0, 0, width, height));
-        return new RenderPassDescriptorWithViews(descriptor, views);
+        // The viewport of the pass is derived from the first attachment, so the
+        // render area must be the common draw-buffer extent (upstream
+        // CompositeRenderer uses pass.viewWidth/viewHeight the same way).
+        descriptor.withRenderArea(new RenderPass.RenderArea(0, 0, targetWidth, targetHeight));
+        // Closing the descriptor must only release the views this call created;
+        // the generation-owned full-range views stay open.
+        return new RenderPassDescriptorWithViews(descriptor, views, owned.toArray());
     }
 
     RenderPassDescriptor createTerrainWriteDescriptor(
@@ -332,6 +490,7 @@ final class IrisMetalRenderTargets implements AutoCloseable {
                 throw new IllegalArgumentException("Terrain DRAWBUFFERS repeats logical target " + logicalTarget);
             }
             written[logicalTarget] = true;
+            requireBaseExtent("Terrain", label, logicalTarget);
             Optional<Vector4fc> clear = logicalTarget == 0 && mainClearColor != null
                     ? Optional.of(mainClearColor)
                     : Optional.empty();
@@ -347,12 +506,59 @@ final class IrisMetalRenderTargets implements AutoCloseable {
         return descriptor;
     }
 
+    /**
+     * Builds the rewritten attachment set for a taken-over world draw. When
+     * {@code depthView} is present (M2 vanilla-depth mode) the pass tests and
+     * writes the vanilla scene depth, so later translucent terrain passes
+     * observe entity/hand depth; {@code null} falls back to the Iris
+     * depthtex0 attachment (legacy behavior).
+     */
+    RenderPassDescriptor createWorldWriteDescriptor(
+            final String label,
+            final int[] drawBuffers,
+            final RenderPass.@Nullable RenderArea renderArea,
+            final @Nullable GpuTextureView depthView,
+            final OptionalDouble depthClear
+    ) {
+        ensureOpen();
+        if (drawBuffers.length == 0) {
+            throw new IllegalArgumentException("A world gbuffer pass must write at least one draw buffer");
+        }
+        RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> label);
+        boolean[] written = new boolean[colorTargets.targetCount()];
+        for (int logicalTarget : drawBuffers) {
+            if (logicalTarget < 0 || logicalTarget >= colorTargets.targetCount()) {
+                throw new IllegalArgumentException("World DRAWBUFFERS target out of range: " + logicalTarget);
+            }
+            if (written[logicalTarget]) {
+                throw new IllegalArgumentException("World DRAWBUFFERS repeats logical target " + logicalTarget);
+            }
+            written[logicalTarget] = true;
+            requireBaseExtent("World", label, logicalTarget);
+            descriptor.withColorAttachment(colorTargets.readView(logicalTarget), Optional.empty());
+        }
+        if (depthView != null) {
+            descriptor.withDepthAttachment(depthView, depthClear);
+        } else {
+            descriptor.withDepthAttachment(mainDepthView(), OptionalDouble.empty());
+        }
+        descriptor.withRenderArea(renderArea == null
+                ? new RenderPass.RenderArea(0, 0, width, height)
+                : renderArea);
+        return descriptor;
+    }
+
     void resize(final int newWidth, final int newHeight) {
         ensureOpen();
         if (newWidth == width && newHeight == height) {
             return;
         }
-        colorTargets.resize(newWidth, newHeight);
+        // Re-derive every target extent from the new base size; depth stays base.
+        IrisMetalRenderTargetExtents.Extents resized = IrisMetalRenderTargetExtents.from(
+                directives, colorTargets.targetCount(), newWidth, newHeight
+        );
+        this.extents = resized;
+        colorTargets.resize(resized.widths(), resized.heights());
         releaseDepthTextures();
         createDepthTextures(newWidth, newHeight);
         this.fullClearRequired = true;
@@ -405,13 +611,77 @@ final class IrisMetalRenderTargets implements AutoCloseable {
         nearestMipSampler.close();
     }
 
+    /**
+     * Render-attachment view: the generation-owned full-range view when the
+     * attachment-view switch is on (default), otherwise the legacy
+     * level-0-only view, which the caller owns and must close (identity
+     * comparison against {@code fullView} detects that case).
+     *
+     * <p>A full-range view makes {@code MetalGpuTextureView.nativeHandle()}
+     * return the texture itself, so a mipmapped attachment keeps one handle
+     * across passes and the encoder can stay open. Rendering still only writes
+     * level 0 either way.</p>
+     */
+    static MetalGpuTextureView attachmentView(
+            final MetalGpuTextureView fullView,
+            final @Nullable MetalGpuTexture texture
+    ) {
+        if (texture == null) {
+            return fullView;
+        }
+        MetalRenderPolicy.AttachmentViewRange range = MetalRenderPolicy.attachmentViewRange(
+                MetalDebugSwitches.ATTACHMENT_VIEWS_FULL, texture.getMipLevels()
+        );
+        return MetalRenderPolicy.usesTextureHandle(range, texture.getMipLevels())
+                ? fullView
+                : new MetalGpuTextureView(texture, range.baseMipLevel(), range.mipLevels());
+    }
+
+    /**
+     * Collects the attachment views one descriptor builder created, so the
+     * descriptor closes exactly those. The default full-range path creates
+     * none and leaves the list unallocated.
+     */
+    static final class AttachmentViewOwnership {
+        private static final MetalGpuTextureView[] NONE = new MetalGpuTextureView[0];
+        private List<MetalGpuTextureView> created;
+
+        void add(final MetalGpuTextureView fullView, final MetalGpuTextureView attachmentView) {
+            if (attachmentView == fullView) {
+                return;
+            }
+            if (created == null) {
+                created = new ArrayList<>(2);
+            }
+            created.add(attachmentView);
+        }
+
+        MetalGpuTextureView[] toArray() {
+            return created == null ? NONE : created.toArray(new MetalGpuTextureView[0]);
+        }
+    }
+
+    /**
+     * A descriptor plus the attachment views it was built from.
+     *
+     * <p>{@code ownedViews} are the views this record created and must close
+     * (the legacy subresource path); views borrowed from a generation-owned
+     * target are only listed in {@code views} and stay open. Callers that build
+     * a descriptor from engine-provided views use the two-argument form, which
+     * owns {@code views}.</p>
+     */
     record RenderPassDescriptorWithViews(
             RenderPassDescriptor descriptor,
-            MetalGpuTextureView[] views
+            MetalGpuTextureView[] views,
+            MetalGpuTextureView[] ownedViews
     ) implements AutoCloseable {
+        RenderPassDescriptorWithViews(final RenderPassDescriptor descriptor, final MetalGpuTextureView[] views) {
+            this(descriptor, views, views);
+        }
+
         @Override
         public void close() {
-            for (MetalGpuTextureView view : views) {
+            for (MetalGpuTextureView view : ownedViews) {
                 if (view != null) {
                     view.close();
                 }

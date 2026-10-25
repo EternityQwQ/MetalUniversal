@@ -243,9 +243,5 @@ public final class IrisMetalProgramFrontend {
             super("Iris program '" + programName + "': " + message, cause);
             this.programName = programName;
         }
-
-        public String programName() {
-            return this.programName;
-        }
     }
 }

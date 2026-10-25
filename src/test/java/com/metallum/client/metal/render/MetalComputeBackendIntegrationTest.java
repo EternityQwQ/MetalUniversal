@@ -7,7 +7,6 @@ import com.mojang.blaze3d.PrimitiveTopology;
 import com.mojang.blaze3d.buffers.GpuBuffer;
 import com.mojang.blaze3d.pipeline.ColorTargetState;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
-import com.mojang.blaze3d.shaders.GpuDebugOptions;
 import com.mojang.blaze3d.shaders.ShaderSource;
 import com.mojang.blaze3d.shaders.ShaderType;
 import com.mojang.blaze3d.systems.RenderPass;
@@ -22,7 +21,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
 
-import java.lang.foreign.MemorySegment;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.HashMap;
@@ -50,22 +48,13 @@ final class MetalComputeBackendIntegrationTest {
 
     @BeforeEach
     void createDevice() {
-        MemorySegment nativeDevice = MetalNativeBridge.metallum_create_system_default_device();
-        assertFalse(MetalNativeBridge.isNullHandle(nativeDevice), "MTLCreateSystemDefaultDevice returned null");
         assertTrue(MetalNativeBridge.supportsComputeAbi(), "dylib must export the compute ABI");
         assertTrue(MetalNativeBridge.supportsGenerateMipmaps(), "dylib must export generateMipmaps");
         assertTrue(MetalNativeBridge.supportsSamplerCompare(), "dylib must export the compare-sampler ABI");
         ShaderSource source = (identifier, type) ->
                 shaders.get(identifier.getPath().substring(identifier.getPath().lastIndexOf('/') + 1)
                         + (type == ShaderType.VERTEX ? ".vert" : ".frag"));
-        device = new MetalDevice(
-                source,
-                new GpuDebugOptions(2, true, true, true),
-                nativeDevice,
-                MemorySegment.NULL,
-                "Metal compute integration device",
-                MemorySegment.NULL
-        );
+        device = MetalGpuTestSupport.createSystemDefaultDevice(source, "Metal compute integration device");
         encoder = device.createCommandEncoder();
     }
 
@@ -231,7 +220,9 @@ final class MetalComputeBackendIntegrationTest {
                         .bindTexture(0, storage)
                         .dispatchThreadsCovering(WIDTH, HEIGHT, 1);
             }
-            ByteBuffer data = readbackTexture(storage, 0, WIDTH, HEIGHT);
+            ByteBuffer data = MetalGpuTestSupport.readback(
+                    device, encoder, storage, "caps readback", 0, WIDTH, HEIGHT
+            );
             assertByteNear(data.get(0), 64, "imageStore red");
             assertByteNear(data.get(1), 128, "imageStore green");
             assertByteNear(data.get(2), 191, "imageStore blue");
@@ -366,9 +357,13 @@ final class MetalComputeBackendIntegrationTest {
             // pass draws over the target, then we copy the COMPUTE result to
             // prove its writes completed independently of the draw.
             renderFullscreen("caps_sample", target, new Vector4f(0.0F, 0.0F, 0.0F, 1.0F));
-            ByteBuffer computeData = readbackTexture(storage, 0, WIDTH, HEIGHT);
+            ByteBuffer computeData = MetalGpuTestSupport.readback(
+                    device, encoder, storage, "caps readback", 0, WIDTH, HEIGHT
+            );
             assertByteNear(computeData.get(1), 255, "compute green after interleaved render");
-            ByteBuffer renderData = readbackTexture(target, 0, WIDTH, HEIGHT);
+            ByteBuffer renderData = MetalGpuTestSupport.readback(
+                    device, encoder, target, "caps readback", 0, WIDTH, HEIGHT
+            );
             assertByteNear(renderData.get(0), 191, "render red after compute");
         }
     }
@@ -395,7 +390,9 @@ final class MetalComputeBackendIntegrationTest {
             encoder.writeToTexture(texture, level0, 0, 0, 0, 0, WIDTH, HEIGHT);
             encoder.generateMipmaps(texture);
             int mipWidth = WIDTH >> 2;
-            ByteBuffer mip2 = readbackTexture(texture, 2, mipWidth, 1);
+            ByteBuffer mip2 = MetalGpuTestSupport.readback(
+                    device, encoder, texture, "caps readback", 2, mipWidth, 1
+            );
             assertByteNear(mip2.get(2 * 4), 255, "mip2 left half red");
             assertByteNear(mip2.get(2 * 4 + 2), 0, "mip2 left half has no blue");
             assertByteNear(mip2.get((mipWidth - 3) * 4), 0, "mip2 right half has no red");
@@ -490,25 +487,6 @@ final class MetalComputeBackendIntegrationTest {
             pass.setPipeline(pipeline);
             pass.draw(3, 1, 0, 0);
             encoder.submitRenderPass();
-        }
-    }
-
-    private ByteBuffer readbackTexture(final MetalGpuTexture texture, final int mipLevel, final int width, final int height) {
-        int size = width * height * texture.pixelSize();
-        try (MetalGpuBuffer buffer = (MetalGpuBuffer) device.createBuffer(
-                () -> "caps readback",
-                GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST,
-                size
-        )) {
-            encoder.copyTextureToBuffer(texture, buffer, 0L, () -> {
-            }, mipLevel);
-            encoder.submit();
-            device.waitForSubmittedGpuWork();
-            ByteBuffer source = buffer.currentStorage().limit(size).slice().order(ByteOrder.nativeOrder());
-            ByteBuffer copy = ByteBuffer.allocate(size).order(ByteOrder.nativeOrder());
-            copy.put(source);
-            copy.flip();
-            return copy;
         }
     }
 

@@ -15,3 +15,9 @@ accessible class com/mojang/blaze3d/vulkan/glsl/SpvVariable
 # needs its own.)
 accessible class com/mojang/blaze3d/opengl/GlRenderPass
 accessible class com/mojang/blaze3d/opengl/GlRenderPass$TextureViewAndSampler
+
+# M6.3: upstream Iris exposes BlockEntityRenderState.blockState through its
+# own accesswidener (needed by ShadowRenderer's lights-only filter). Each
+# mod's accesswidener applies only to its own compile classpath, so
+# MetalUniversal needs its own entry to filter light-emitting block entities.
+accessible field net/minecraft/client/renderer/blockentity/state/BlockEntityRenderState blockState Lnet/minecraft/world/level/block/state/BlockState;

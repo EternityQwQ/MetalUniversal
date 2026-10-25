@@ -7,6 +7,11 @@ name: build
 run-name: ${{ github.ref_name }}
 on:
   workflow_dispatch:
+    inputs:
+      run_gpu_integration_tests:
+        description: 'Run macOS GPU integration tests'
+        type: boolean
+        default: false
   push:
     tags:
       - 'v*'
@@ -17,6 +22,7 @@ permissions:
 jobs:
   build:
     runs-on: macos-15
+    timeout-minutes: 90
     steps:
       - name: checkout repository
         uses: actions/checkout@v6
@@ -49,6 +55,16 @@ jobs:
         with:
           name: native-libs
           path: src/main/resources/natives/
+      - name: gpu integration tests
+        if: inputs.run_gpu_integration_tests
+        run: |
+          ./gradlew \
+            metalComputeBackendIntegrationTest \
+            metalMrtBackendIntegrationTest \
+            metalGenericVertexAttributeIntegrationTest \
+            metalIrisTargetsIntegrationTest \
+            metalIrisTexturesIntegrationTest \
+            --console=plain
 
   publish:
     needs: build

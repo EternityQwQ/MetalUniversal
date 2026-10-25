@@ -125,26 +125,18 @@ public final class MTLCommandBuffer {
         MetalNativeBridge.MTLCommandBuffer_encodePresentTextureToDrawable(handle(), layer, sourceTexture, globalFence);
     }
 
-    public void commit() {
-        MetalNativeBridge.MTLCommandBuffer_commit(handle());
-    }
-
     public void commitWithSignal(final MemorySegment semaphore) {
         MetalNativeBridge.MTLCommandBuffer_commitWithSignal(handle(), semaphore);
     }
 
-    public boolean isCompleted() {
-        if (MetalNativeBridge.isNullHandle(handle)) {
-            return true;
-        }
-        return MetalNativeBridge.MTLCommandBuffer_isCompleted(handle()) == 1;
+    /** Metal {@code GPUStartTime} in seconds; NaN when unavailable. */
+    public double gpuStartTime() {
+        return MetalNativeBridge.MTLCommandBuffer_gpuStartTime(handle());
     }
 
-    public boolean waitUntilCompleted(final long timeoutMs) {
-        if (MetalNativeBridge.isNullHandle(handle)) {
-            return true;
-        }
-        return MetalNativeBridge.MTLCommandBuffer_waitUntilCompleted(handle(), Math.max(timeoutMs, 0L)) == 0;
+    /** Metal {@code GPUEndTime} in seconds; NaN when unavailable. */
+    public double gpuEndTime() {
+        return MetalNativeBridge.MTLCommandBuffer_gpuEndTime(handle());
     }
 
     public void pushDebugGroup(final String label) {

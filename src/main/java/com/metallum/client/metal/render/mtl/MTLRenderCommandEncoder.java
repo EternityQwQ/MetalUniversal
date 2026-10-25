@@ -41,10 +41,6 @@ public final class MTLRenderCommandEncoder extends MTLCommandEncoder {
         MetalNativeBridge.MTLRenderCommandEncoder_setBuffer(handle(), buffer, offset, index, stageMask);
     }
 
-    public void setBufferOffset(final long offset, final long index, final int stageMask) {
-        MetalNativeBridge.MTLRenderCommandEncoder_setBufferOffset(handle(), offset, index, stageMask);
-    }
-
     public void setTexture(final MemorySegment texture, final long index, final int stageMask) {
         MetalNativeBridge.MTLRenderCommandEncoder_setTexture(handle(), texture, index, stageMask);
     }
@@ -55,35 +51,6 @@ public final class MTLRenderCommandEncoder extends MTLCommandEncoder {
 
     public void setScissorRect(final long x, final long y, final long width, final long height) {
         MetalNativeBridge.MTLRenderCommandEncoder_setScissorRect(handle(), x, y, width, height);
-    }
-
-    public void clearDraw(
-            final MemorySegment colorTexture,
-            final MemorySegment depthTexture,
-            final double viewportWidth,
-            final double viewportHeight,
-            final boolean clearColorEnabled,
-            final float clearColorRed,
-            final float clearColorGreen,
-            final float clearColorBlue,
-            final float clearColorAlpha,
-            final boolean clearDepthEnabled,
-            final double clearDepth
-    ) {
-        MetalNativeBridge.MTLRenderCommandEncoder_clearDraw(
-                handle(),
-                colorTexture,
-                depthTexture,
-                viewportWidth,
-                viewportHeight,
-                clearColorEnabled ? 1 : 0,
-                clearColorRed,
-                clearColorGreen,
-                clearColorBlue,
-                clearColorAlpha,
-                clearDepthEnabled ? 1 : 0,
-                clearDepth
-        );
     }
 
     public void drawPrimitives(final MTLPrimitiveType primitiveType, final int firstVertex, final int vertexCount, final int instanceCount, final int baseInstance) {

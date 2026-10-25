@@ -50,6 +50,8 @@ import java.util.regex.Pattern;
 @Environment(EnvType.CLIENT)
 final class MetalComputePipeline implements AutoCloseable {
     private static final Pattern KERNEL_ENTRY_PATTERN = Pattern.compile("\\bkernel\\s+\\w+\\s+(\\w+)\\s*\\(");
+    /** Metal rejects {@code [[sampler(N)]]} with {@code N > 15}; guard compute MSL against it. */
+    private static final Pattern SAMPLER_ATTRIBUTE_PATTERN = Pattern.compile("\\[\\[sampler\\((\\d+)\\)]]");
     private static final int MSL_VERSION_4_0 = 0x040000;
 
     private final MetalDevice device;
@@ -218,6 +220,17 @@ final class MetalComputePipeline implements AutoCloseable {
                 PointerBuffer pSource = stack.mallocPointer(1);
                 checkSpvc(Spvc.spvc_compiler_compile(compiler, pSource), label, "spvc_compiler_compile");
                 String msl = MemoryUtil.memUTF8(pSource.get(0));
+                Matcher samplerMatcher = SAMPLER_ATTRIBUTE_PATTERN.matcher(msl);
+                while (samplerMatcher.find()) {
+                    int samplerIndex = Integer.parseInt(samplerMatcher.group(1));
+                    if (samplerIndex >= MetalCrossShaderCompiler.MAX_METAL_SAMPLERS_PER_STAGE) {
+                        throw new IllegalStateException(
+                                "Compute shader " + label + " uses [[sampler(" + samplerIndex + ")]], but Metal allows "
+                                        + "at most " + MetalCrossShaderCompiler.MAX_METAL_SAMPLERS_PER_STAGE
+                                        + " sampler slots per stage; compute MSL is not re-indexed"
+                        );
+                    }
+                }
                 Matcher matcher = KERNEL_ENTRY_PATTERN.matcher(msl);
                 String entryPoint = matcher.find() ? matcher.group(1) : "main0";
                 return new MslKernel(

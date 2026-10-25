@@ -1,6 +1,5 @@
 package com.metallum.client.metal.render;
 
-import com.metallum.client.metal.render.bridge.MetalNativeBridge;
 import com.metallum.client.metal.render.mtl.MTLRenderCommandEncoder;
 import com.mojang.blaze3d.GpuFormat;
 import com.mojang.blaze3d.PrimitiveTopology;
@@ -10,7 +9,6 @@ import com.mojang.blaze3d.pipeline.ColorTargetState;
 import com.mojang.blaze3d.pipeline.DepthStencilState;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.platform.CompareOp;
-import com.mojang.blaze3d.shaders.GpuDebugOptions;
 import com.mojang.blaze3d.shaders.ShaderSource;
 import com.mojang.blaze3d.shaders.ShaderType;
 import com.mojang.blaze3d.systems.RenderPass;
@@ -66,22 +64,13 @@ final class MetalMrtBackendIntegrationTest {
 
     @BeforeEach
     void createDevice() {
-        MemorySegment nativeDevice = MetalNativeBridge.metallum_create_system_default_device();
-        assertFalse(MetalNativeBridge.isNullHandle(nativeDevice), "MTLCreateSystemDefaultDevice returned null");
         ShaderSource source = (identifier, type) -> {
             String name = identifier.getPath().substring(identifier.getPath().lastIndexOf('/') + 1);
             return type == ShaderType.VERTEX
                     ? vertexShaders.getOrDefault(name, VERTEX_SHADER)
                     : fragmentShaders.get(name);
         };
-        device = new MetalDevice(
-                source,
-                new GpuDebugOptions(2, true, true, true),
-                nativeDevice,
-                MemorySegment.NULL,
-                "Metal MRT integration device",
-                MemorySegment.NULL
-        );
+        device = MetalGpuTestSupport.createSystemDefaultDevice(source, "Metal MRT integration device");
         encoder = device.createCommandEncoder();
     }
 
@@ -129,9 +118,9 @@ final class MetalMrtBackendIntegrationTest {
         RenderPipeline pipeline = pipeline(shaderName, formats, null, ColorTargetState.WRITE_ALL);
         List<MetalGpuTexture> textures = createTextures(formats, "non-contiguous");
         render(pipeline, textures, null);
-        assertByteNear(readback(textures.get(0)).get(0), 64, "slot 0 red");
-        assertByteNear(readback(textures.get(2)).get(1), 128, "slot 2 green");
-        assertByteNear(readback(textures.get(5)).get(2), 191, "slot 5 blue");
+        assertByteNear(MetalGpuTestSupport.readback(device, encoder, textures.get(0), "MRT readback").get(0), 64, "slot 0 red");
+        assertByteNear(MetalGpuTestSupport.readback(device, encoder, textures.get(2), "MRT readback").get(1), 128, "slot 2 green");
+        assertByteNear(MetalGpuTestSupport.readback(device, encoder, textures.get(5), "MRT readback").get(2), 191, "slot 5 blue");
         closeTextures(textures);
     }
 
@@ -196,10 +185,10 @@ final class MetalMrtBackendIntegrationTest {
             encoder.submit();
             device.waitForSubmittedGpuWork();
 
-            assertByteNear(readback(textures.get(0)).get(0), 128, "depth+MRT color red");
-            ByteBuffer motion = readback(textures.get(1)).order(ByteOrder.nativeOrder());
+            assertByteNear(MetalGpuTestSupport.readback(device, encoder, textures.get(0), "MRT readback").get(0), 128, "depth+MRT color red");
+            ByteBuffer motion = MetalGpuTestSupport.readback(device, encoder, textures.get(1), "MRT readback").order(ByteOrder.nativeOrder());
             assertEquals(0.125F, Float.float16ToFloat(motion.getShort(0)), 0.01F);
-            ByteBuffer depthData = readback(depthTexture).order(ByteOrder.nativeOrder());
+            ByteBuffer depthData = MetalGpuTestSupport.readback(device, encoder, depthTexture, "MRT readback").order(ByteOrder.nativeOrder());
             assertEquals(0.25F, depthData.getFloat(0), 0.001F, "depth attachment must hold the written z");
             for (MetalGpuTextureView view : views) {
                 view.close();
@@ -225,10 +214,10 @@ final class MetalMrtBackendIntegrationTest {
         List<MetalGpuTexture> textures = createTextures(formats, "vector-outputs-rgba16");
         render(pipeline, textures, null);
 
-        ByteBuffer motion = readback(textures.get(0)).order(ByteOrder.nativeOrder());
+        ByteBuffer motion = MetalGpuTestSupport.readback(device, encoder, textures.get(0), "MRT readback").order(ByteOrder.nativeOrder());
         assertEquals(0.25F, Float.float16ToFloat(motion.getShort(0)), 0.01F);
         assertEquals(-0.5F, Float.float16ToFloat(motion.getShort(2)), 0.01F);
-        ByteBuffer color = readback(textures.get(1)).order(ByteOrder.nativeOrder());
+        ByteBuffer color = MetalGpuTestSupport.readback(device, encoder, textures.get(1), "MRT readback").order(ByteOrder.nativeOrder());
         assertEquals(0.125F, Float.float16ToFloat(color.getShort(0)), 0.01F);
         assertEquals(0.5F, Float.float16ToFloat(color.getShort(2)), 0.01F);
         assertEquals(0.875F, Float.float16ToFloat(color.getShort(4)), 0.01F);
@@ -250,7 +239,7 @@ final class MetalMrtBackendIntegrationTest {
         RenderPipeline pipeline = pipeline(shaderName, formats, null, ColorTargetState.WRITE_ALL);
         List<MetalGpuTexture> original = createTextures(formats, "resize-before");
         render(pipeline, original, null);
-        assertByteNear(readback(original.get(0)).get(0), 64, "pre-resize content");
+        assertByteNear(MetalGpuTestSupport.readback(device, encoder, original.get(0), "MRT readback").get(0), 64, "pre-resize content");
         closeTextures(original);
 
         int resizedWidth = WIDTH / 2;
@@ -335,11 +324,11 @@ final class MetalMrtBackendIntegrationTest {
                 new Vector4f(0.8F, 0.2F, 0.4F, 1.0F)
         ));
 
-        ByteBuffer written = readback(textures.get(0));
+        ByteBuffer written = MetalGpuTestSupport.readback(device, encoder, textures.get(0), "MRT readback");
         assertByteNear(written.get(0), 64, "written target red");
         assertByteNear(written.get(1), 128, "written target green");
         assertByteNear(written.get(2), 191, "written target blue");
-        ByteBuffer unwritten = readback(textures.get(1));
+        ByteBuffer unwritten = MetalGpuTestSupport.readback(device, encoder, textures.get(1), "MRT readback");
         assertByteNear(unwritten.get(0), 204, "unwritten target clear red");
         assertByteNear(unwritten.get(1), 51, "unwritten target clear green");
         assertByteNear(unwritten.get(2), 102, "unwritten target clear blue");
@@ -375,7 +364,7 @@ final class MetalMrtBackendIntegrationTest {
         render(pipeline, textures, null);
 
         for (int index = 0; index < count; index++) {
-            ByteBuffer data = readback(textures.get(index));
+            ByteBuffer data = MetalGpuTestSupport.readback(device, encoder, textures.get(index), "MRT readback");
             assertByteNear(data.get(0), Math.round(255.0F * 0.125F * (index + 1)), "RGBA red " + index);
             assertByteNear(data.get(1), 64, "RGBA green " + index);
             assertByteNear(data.get(2), 128, "RGBA blue " + index);
@@ -410,14 +399,14 @@ final class MetalMrtBackendIntegrationTest {
                 new Vector4f(0.1F, 0.0F, 0.0F, 1.0F)
         ));
 
-        ByteBuffer color = readback(textures.get(0));
+        ByteBuffer color = MetalGpuTestSupport.readback(device, encoder, textures.get(0), "MRT readback");
         assertByteNear(color.get(0), 64, "mixed color red");
         assertByteNear(color.get(1), 128, "mixed color green");
         assertByteNear(color.get(2), 191, "mixed color blue");
-        ByteBuffer motion = readback(textures.get(1)).order(ByteOrder.nativeOrder());
+        ByteBuffer motion = MetalGpuTestSupport.readback(device, encoder, textures.get(1), "MRT readback").order(ByteOrder.nativeOrder());
         assertEquals(-0.25F, Float.float16ToFloat(motion.getShort(0)), 0.01F);
         assertEquals(0.5F, Float.float16ToFloat(motion.getShort(2)), 0.01F);
-        assertByteNear(readback(textures.get(2)).get(0), 191, "mixed validity");
+        assertByteNear(MetalGpuTestSupport.readback(device, encoder, textures.get(2), "MRT readback").get(0), 191, "mixed validity");
         closeTextures(textures);
     }
 
@@ -439,11 +428,11 @@ final class MetalMrtBackendIntegrationTest {
         RenderPipeline pipeline = pipeline(shaderName, formats, null, ColorTargetState.WRITE_ALL);
         List<MetalGpuTexture> textures = createTextures(formats, "null-middle");
         render(pipeline, textures, null);
-        ByteBuffer color = readback(textures.get(0));
+        ByteBuffer color = MetalGpuTestSupport.readback(device, encoder, textures.get(0), "MRT readback");
         assertByteNear(color.get(0), 191, "null slot color red");
         assertByteNear(color.get(1), 64, "null slot color green");
         assertByteNear(color.get(2), 128, "null slot color blue");
-        assertByteNear(readback(textures.get(2)).get(0), 64, "null slot validity");
+        assertByteNear(MetalGpuTestSupport.readback(device, encoder, textures.get(2), "MRT readback").get(0), 64, "null slot validity");
         closeTextures(textures);
     }
 
@@ -465,7 +454,7 @@ final class MetalMrtBackendIntegrationTest {
         RenderPipeline pipeline = pipeline(shaderName, formats, null, ColorTargetState.WRITE_ALL);
         List<MetalGpuTexture> textures = createTextures(formats, "eight");
         render(pipeline, textures, null);
-        assertByteNear(readback(textures.get(7)).get(0), 128, "eighth attachment");
+        assertByteNear(MetalGpuTestSupport.readback(device, encoder, textures.get(7), "MRT readback").get(0), 128, "eighth attachment");
         closeTextures(textures);
     }
 
@@ -494,10 +483,10 @@ final class MetalMrtBackendIntegrationTest {
                 new Vector4f(0.4F, 0.5F, 0.6F, 1.0F)
         ));
 
-        ByteBuffer clear0 = readback(textures.get(0));
+        ByteBuffer clear0 = MetalGpuTestSupport.readback(device, encoder, textures.get(0), "MRT readback");
         assertByteNear(clear0.get(0), 26, "slot 0 clear/store red");
         assertByteNear(clear0.get(1), 51, "slot 0 clear/store green");
-        ByteBuffer clear1 = readback(textures.get(1));
+        ByteBuffer clear1 = MetalGpuTestSupport.readback(device, encoder, textures.get(1), "MRT readback");
         assertByteNear(clear1.get(0), 102, "slot 1 clear/store red");
         assertByteNear(clear1.get(1), 128, "slot 1 clear/store green");
 
@@ -527,12 +516,12 @@ final class MetalMrtBackendIntegrationTest {
                 )
         );
         renderLoad(pipeline, textures);
-        ByteBuffer first = readback(textures.getFirst());
+        ByteBuffer first = MetalGpuTestSupport.readback(device, encoder, textures.getFirst(), "MRT readback");
         assertByteNear(first.get(0), 89, "slot 0 additive red");
         assertByteNear(first.get(1), 51, "slot 0 masked green preserved load");
         assertByteNear(first.get(2), 77, "slot 0 masked blue preserved load");
         assertByteNear(first.get(3), 255, "slot 0 masked alpha preserved load");
-        ByteBuffer second = readback(textures.get(1));
+        ByteBuffer second = MetalGpuTestSupport.readback(device, encoder, textures.get(1), "MRT readback");
         assertByteNear(second.get(0), 102, "slot 1 masked red preserved load");
         assertByteNear(second.get(1), 64, "slot 1 green write");
         assertByteNear(second.get(2), 153, "slot 1 masked blue preserved load");
@@ -561,7 +550,7 @@ final class MetalMrtBackendIntegrationTest {
         legacyEncoder.endEncoding();
         encoder.submit();
         device.waitForSubmittedGpuWork();
-        ByteBuffer data = readback(texture);
+        ByteBuffer data = MetalGpuTestSupport.readback(device, encoder, texture, "MRT readback");
         assertByteNear(data.get(0), 51, "legacy ABI red");
         assertByteNear(data.get(1), 102, "legacy ABI green");
         assertByteNear(data.get(2), 153, "legacy ABI blue");
@@ -754,25 +743,6 @@ final class MetalMrtBackendIntegrationTest {
         }
         descriptor.withRenderArea(new RenderPass.RenderArea(0, 0, WIDTH, HEIGHT));
         return new PassWithViews((MetalRenderPass) encoder.createRenderPass(descriptor), views);
-    }
-
-    private ByteBuffer readback(MetalGpuTexture texture) {
-        int size = WIDTH * HEIGHT * texture.pixelSize();
-        try (MetalGpuBuffer buffer = (MetalGpuBuffer) device.createBuffer(
-                () -> "MRT readback",
-                GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST,
-                size
-        )) {
-            encoder.copyTextureToBuffer(texture, buffer, 0L, () -> {
-            }, 0);
-            encoder.submit();
-            device.waitForSubmittedGpuWork();
-            ByteBuffer source = buffer.currentStorage().limit(size).slice().order(ByteOrder.nativeOrder());
-            ByteBuffer copy = ByteBuffer.allocate(size).order(ByteOrder.nativeOrder());
-            copy.put(source);
-            copy.flip();
-            return copy;
-        }
     }
 
     private record PassWithViews(

@@ -15,6 +15,7 @@ import com.mojang.blaze3d.textures.GpuSampler;
 import com.mojang.blaze3d.textures.GpuTextureView;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
+import net.irisshaders.iris.Iris;
 import net.minecraft.SharedConstants;
 import org.joml.Vector4fc;
 import org.jspecify.annotations.NonNull;
@@ -24,6 +25,7 @@ import org.lwjgl.vulkan.VkDrawIndexedIndirectCommand;
 import org.lwjgl.vulkan.VkDrawIndirectCommand;
 
 import java.lang.foreign.MemorySegment;
+import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
 import java.util.Arrays;
 import java.util.Collection;
@@ -34,6 +36,13 @@ import java.util.function.Supplier;
 final class MetalRenderPass implements RenderPassBackend {
     static final boolean VALIDATION = SharedConstants.IS_RUNNING_IN_IDE;
     static final int MAX_VERTEX_BUFFERS = RenderPass.MAX_VERTEX_BUFFERS;
+    /**
+     * Prefix Iris' vanilla-core transformer adds to the engine's built-in UBO
+     * names in patched programs (eg {@code Fog} becomes {@code iris_Fog}).
+     * The engine still binds the values under the plain names, so descriptor
+     * lookups fall back to them.
+     */
+    private static final String IRIS_UNIFORM_PREFIX = "iris_";
     private final MetalDevice device;
     private final MetalCommandEncoder commandEncoder;
     @Nullable
@@ -55,6 +64,14 @@ final class MetalRenderPass implements RenderPassBackend {
     private long dirtyDescriptorMask;
     @Nullable
     private MetalCompiledRenderPipeline compiledPipeline;
+    /**
+     * Per-draw replacement for the shaderpack uniform block, materialized by
+     * {@link IrisMetalWorldBridge#materializePerDrawUniforms} from the engine's
+     * {@code DynamicTransforms}/{@code Projection}; {@code null} keeps the
+     * shared per-frame slice.
+     */
+    @Nullable
+    private GpuBufferSlice perDrawUniformOverride;
     @Nullable
     private GpuBuffer indexBuffer;
     private MTLIndexType indexType = MTLIndexType.UInt16;
@@ -194,7 +211,7 @@ final class MetalRenderPass implements RenderPassBackend {
             for (MetalCompiledRenderPipeline.ResourceBinding resource : compiledPipeline.resources()) {
                 if (resource.kind() == MetalCompiledRenderPipeline.ResourceKind.STORAGE_BUFFER
                         && MetalCrossShaderCompiler.storageBufferLogicalBinding(resource.name()) == binding) {
-                    dirtyDescriptorMask |= 1L << resource.bindingIndex();
+                    dirtyDescriptorMask |= 1L << resource.descriptorMaskIndex();
                 }
             }
         }
@@ -259,6 +276,7 @@ final class MetalRenderPass implements RenderPassBackend {
 
     @Override
     public void drawIndexed(final int indexCount, final int instanceCount, final int firstIndex, final int vertexOffset, final int firstInstance) {
+        MetalPerformanceProbe.recordDraw(1);
         MetalGpuBuffer nativeIndexBuffer = (MetalGpuBuffer) indexBuffer;
         MTLRenderCommandEncoder enc = renderEncoder();
 
@@ -309,6 +327,7 @@ final class MetalRenderPass implements RenderPassBackend {
 
     @Override
     public void drawIndexedIndirect(final @NonNull GpuBufferSlice commands, final int drawCount) {
+        MetalPerformanceProbe.recordDraw(drawCount);
         MTLPrimitiveType primitiveType = primitiveTopology();
         if (primitiveType == MTLPrimitiveType.TriangleFan) {
             throw new UnsupportedOperationException("Metal backend does not support triangle fan indirect draws");
@@ -337,6 +356,7 @@ final class MetalRenderPass implements RenderPassBackend {
             final @NonNull Collection<String> dynamicUniforms,
             final @NonNull T uniformArgument
     ) {
+        MetalPerformanceProbe.recordDraw(draws.size());
         IndexType fallbackIndexType = defaultIndexType == null ? IndexType.SHORT : defaultIndexType;
         MTLRenderCommandEncoder enc = renderEncoder();
 
@@ -493,6 +513,30 @@ final class MetalRenderPass implements RenderPassBackend {
         return commandEncoder.transientMemory().allocateGpuMapped(size, alignment, usage);
     }
 
+    /** Whether the engine bound a vertex buffer at the given logical slot for this pass. */
+    boolean isVertexBufferBound(final int slot) {
+        return slot >= 0 && slot < MAX_VERTEX_BUFFERS && vertexBuffers[slot] != null;
+    }
+
+    /**
+     * CPU bytes of a bound uniform resource, or {@code null} when it is unbound
+     * or its buffer is not host-visible. Only used for the engine's shared
+     * {@code DynamicTransforms}/{@code Projection} buffers.
+     */
+    @Nullable
+    ByteBuffer uniformBytes(final String name) {
+        GpuBufferSlice slice = uniforms.get(name);
+        if (slice == null || !(slice.buffer() instanceof MetalGpuBuffer metalBuffer)) {
+            return null;
+        }
+        return metalBuffer.sliceStorageOrNull(slice.offset(), slice.length());
+    }
+
+    /** Metal's minimum uniform buffer offset alignment for per-draw transient slices. */
+    int minUniformOffsetAlignment() {
+        return this.device.getDeviceInfo().limits().minUniformOffsetAlignment();
+    }
+
     private void pushVertexBuffers(final MTLRenderCommandEncoder enc) {
         int firstSlot = compiledPipeline.firstAvailableVertexBufferSlot();
         int count = compiledPipeline.vertexBufferCount();
@@ -578,6 +622,7 @@ final class MetalRenderPass implements RenderPassBackend {
     }
 
     private void bindDrawState(final MTLRenderCommandEncoder enc) {
+        IrisMetalWorldBridge.recordDrawVertexBuffers(this);
         if (compiledPipeline == null) {
             throw new IllegalStateException("Pipeline is missing");
         }
@@ -603,11 +648,15 @@ final class MetalRenderPass implements RenderPassBackend {
             }
             enc.setDepthStencilState(depthState);
             if (hasAttachment && compiledPipeline.hasDepthStencilState()) {
-                enc.setDepthBias(
-                        compiledPipeline.depthBiasConstant(),
-                        compiledPipeline.depthBiasScaleFactor(),
-                        0.0f
-                );
+                float biasConstant = compiledPipeline.depthBiasConstant();
+                float biasScale = compiledPipeline.depthBiasScaleFactor();
+                if (Iris.isPackInUseQuick()) {
+                    // Mirror Iris's UndoReverseZFive polygon-offset negation for
+                    // shaderpack rendering (the GL backend negates factor/units).
+                    biasConstant = -biasConstant;
+                    biasScale = -biasScale;
+                }
+                enc.setDepthBias(biasConstant, biasScale, 0.0f);
             } else {
                 enc.setDepthBias(0.0f, 0.0f, 0.0f);
             }
@@ -629,9 +678,18 @@ final class MetalRenderPass implements RenderPassBackend {
             vertexBuffersDirty = false;
         }
 
+        // Per-draw core transforms must be materialized after the engine wrote
+        // DynamicTransforms/Projection (setPipeline) and before descriptors are
+        // pushed; null keeps the shared per-frame block. Mark the block dirty
+        // so a second draw in the same pass rebinds its own slice.
+        this.perDrawUniformOverride = IrisMetalWorldBridge.materializePerDrawUniforms(this);
+        if (this.perDrawUniformOverride != null) {
+            markDescriptorDirty(IrisMetalGlslLinker.UNIFORM_BLOCK_NAME);
+        }
+
         if (dirtyDescriptorMask != 0) {
             for (MetalCompiledRenderPipeline.ResourceBinding binding : compiledPipeline.resources()) {
-                if ((dirtyDescriptorMask & (1L << binding.bindingIndex())) != 0L) {
+                if ((dirtyDescriptorMask & (1L << binding.descriptorMaskIndex())) != 0L) {
                     pushDescriptor(enc, binding);
                 }
             }
@@ -673,21 +731,68 @@ final class MetalRenderPass implements RenderPassBackend {
         }
     }
 
+    /**
+     * Marks the descriptor(s) backed by {@code name} dirty. Besides the exact
+     * resource, an {@code iris_}-renamed built-in UBO is marked too: the engine
+     * updates {@code Fog}/{@code DynamicTransforms}/... under the plain name
+     * while an Iris-patched program binds them as {@code iris_Fog} etc. Without
+     * this the renamed binding would keep the first pushed slice forever.
+     */
     private void markDescriptorDirty(final String name) {
-        if (compiledPipeline != null) {
-            MetalCompiledRenderPipeline.ResourceBinding binding = compiledPipeline.resource(name);
-            if (binding != null) {
-                dirtyDescriptorMask |= 1L << binding.bindingIndex();
+        if (compiledPipeline == null) {
+            return;
+        }
+        markDescriptorDirty(compiledPipeline.resource(name));
+        if (!name.startsWith(IRIS_UNIFORM_PREFIX)) {
+            MetalCompiledRenderPipeline.ResourceBinding renamed =
+                    compiledPipeline.resource(IRIS_UNIFORM_PREFIX + name);
+            // Only uniform buffers can be renamed built-ins; never dirty a
+            // sampler/image an engine texture bind happens to alias.
+            if (renamed != null
+                    && renamed.kind() == MetalCompiledRenderPipeline.ResourceKind.UNIFORM_BUFFER) {
+                markDescriptorDirty(renamed);
             }
         }
+    }
+
+    private void markDescriptorDirty(final MetalCompiledRenderPipeline.@Nullable ResourceBinding binding) {
+        if (binding != null) {
+            dirtyDescriptorMask |= 1L << binding.descriptorMaskIndex();
+        }
+    }
+
+    /**
+     * Resolves a uniform buffer slice under the exact resource name, falling
+     * back to the plain engine name for Iris' renamed built-in blocks (eg
+     * {@code iris_Fog} &rarr; the engine-bound {@code Fog} slice). Returns
+     * {@code null} when neither name is bound, so callers keep their original
+     * missing-uniform error.
+     */
+    private @Nullable GpuBufferSlice uniformSlice(final String name) {
+        GpuBufferSlice slice = uniforms.get(name);
+        if (slice != null) {
+            return slice;
+        }
+        if (name.startsWith(IRIS_UNIFORM_PREFIX)) {
+            return uniforms.get(name.substring(IRIS_UNIFORM_PREFIX.length()));
+        }
+        return null;
     }
 
     private void pushDescriptor(
             final MTLRenderCommandEncoder enc,
             final MetalCompiledRenderPipeline.ResourceBinding binding
     ) {
+        if (binding.stageMask() == 0) {
+            // Resource is not active in either stage's MSL (shaderpack programs
+            // get a per-stage active set); there is no declared argument to bind.
+            return;
+        }
         if (binding.kind() == MetalCompiledRenderPipeline.ResourceKind.SAMPLED_IMAGE) {
             TextureViewAndSampler textureBinding = samplers.get(binding.name());
+            if (textureBinding == null) {
+                textureBinding = IrisMetalWorldBridge.fallbackSampler(binding.name(), samplers);
+            }
             if (textureBinding == null) {
                 textureBinding = IrisMetalTerrainBridge.fallbackSampler(binding.name(), samplers);
             }
@@ -701,7 +806,7 @@ final class MetalRenderPass implements RenderPassBackend {
 
             MetalGpuTextureView textureView = (MetalGpuTextureView) textureBinding.textureView();
             MetalGpuSampler sampler = (MetalGpuSampler) textureBinding.sampler();
-            enc.setTextureAndSampler(textureView.nativeHandle(), sampler.nativeHandle(), binding.bindingIndex(), binding.stageMask());
+            setTextureForStages(enc, sampler.nativeHandle(), textureView.nativeHandle(), binding);
             return;
         }
 
@@ -719,17 +824,20 @@ final class MetalRenderPass implements RenderPassBackend {
             }
             commandEncoder.flushPendingClear(texture);
             texture.markContentsDirty();
-            enc.setTexture(metalView.nativeHandle(), binding.bindingIndex(), binding.stageMask());
+            setTextureForStages(enc, null, metalView.nativeHandle(), binding);
             return;
         }
 
-        GpuBufferSlice uniformSlice = uniforms.get(binding.name());
-        if (uniformSlice == null
+        GpuBufferSlice uniformBinding = binding.name().equals(IrisMetalGlslLinker.UNIFORM_BLOCK_NAME)
+                && perDrawUniformOverride != null
+                ? perDrawUniformOverride
+                : uniformSlice(binding.name());
+        if (uniformBinding == null
                 && binding.kind() == MetalCompiledRenderPipeline.ResourceKind.STORAGE_BUFFER) {
             int logicalBinding = MetalCrossShaderCompiler.storageBufferLogicalBinding(binding.name());
-            uniformSlice = storageBuffers.get(logicalBinding);
+            uniformBinding = storageBuffers.get(logicalBinding);
         }
-        if (uniformSlice == null) {
+        if (uniformBinding == null) {
             throw new IllegalStateException(
                     "Missing "
                             + (binding.kind() == MetalCompiledRenderPipeline.ResourceKind.STORAGE_BUFFER
@@ -737,16 +845,16 @@ final class MetalRenderPass implements RenderPassBackend {
                             + binding.name()
             );
         }
-        if (VALIDATION && uniformSlice.buffer().isClosed()) {
+        if (VALIDATION && uniformBinding.buffer().isClosed()) {
             throw new IllegalStateException("Uniform " + binding.name() + " buffer has been closed");
         }
 
-        MetalGpuBuffer uniformBuffer = (MetalGpuBuffer) uniformSlice.buffer();
-        enc.setBuffer(uniformBuffer.nativeHandle(), uniformSlice.offset(), binding.bindingIndex(), binding.stageMask());
+        MetalGpuBuffer uniformBuffer = (MetalGpuBuffer) uniformBinding.buffer();
+        enc.setBuffer(uniformBuffer.nativeHandle(), uniformBinding.offset(), binding.bindingIndex(), binding.stageMask());
     }
 
     private void pushTexelBufferDescriptor(final MTLRenderCommandEncoder enc, final MetalCompiledRenderPipeline.ResourceBinding binding) {
-        GpuBufferSlice texelSlice = uniforms.get(binding.name());
+        GpuBufferSlice texelSlice = uniformSlice(binding.name());
         if (texelSlice == null) {
             throw new IllegalStateException("Missing texel buffer " + binding.name());
         }
@@ -779,8 +887,56 @@ final class MetalRenderPass implements RenderPassBackend {
             throw new IllegalStateException("Failed to create Metal texel buffer texture for " + binding.name());
         }
 
-        enc.setTexture(texelTexture, binding.bindingIndex(), binding.stageMask());
+        setTextureForStages(enc, null, texelTexture, binding);
         commandEncoder.queueForDestroy(() -> MetalNativeBridge.metallum_release_object(texelTexture));
+    }
+
+    /**
+     * Binds a texture, and optionally its sampler, at the per-stage Metal
+     * indices carried by {@code binding}.
+     *
+     * <p>Vanilla bindings use one shared index, so this is a single native
+     * call (byte-for-byte the previous behavior). Shaderpack sampled resources
+     * may compact their vertex and fragment tables independently, so when the
+     * two indices differ each active stage is bound separately with its own
+     * index.
+     *
+     * @param sampler sampler state to bind alongside the texture, or
+     *                {@code null} for a plain texture binding (texel/storage
+     *                images).
+     */
+    private void setTextureForStages(
+            final MTLRenderCommandEncoder enc,
+            final @Nullable MemorySegment sampler,
+            final MemorySegment texture,
+            final MetalCompiledRenderPipeline.ResourceBinding binding
+    ) {
+        final int vertexIndex = binding.bindingIndex();
+        final int fragmentIndex = binding.fragmentBindingIndex();
+        if (vertexIndex == fragmentIndex) {
+            if (sampler == null) {
+                enc.setTexture(texture, vertexIndex, binding.stageMask());
+            } else {
+                enc.setTextureAndSampler(texture, sampler, vertexIndex, binding.stageMask());
+            }
+            return;
+        }
+        if ((binding.stageMask() & MetalCompiledRenderPipeline.STAGE_VERTEX) != 0) {
+            int index = binding.bindingIndexForStage(MetalCompiledRenderPipeline.STAGE_VERTEX);
+            if (sampler == null) {
+                enc.setTexture(texture, index, MetalCompiledRenderPipeline.STAGE_VERTEX);
+            } else {
+                enc.setTextureAndSampler(texture, sampler, index, MetalCompiledRenderPipeline.STAGE_VERTEX);
+            }
+        }
+        if ((binding.stageMask() & MetalCompiledRenderPipeline.STAGE_FRAGMENT) != 0) {
+            int index = binding.bindingIndexForStage(MetalCompiledRenderPipeline.STAGE_FRAGMENT);
+            if (sampler == null) {
+                enc.setTexture(texture, index, MetalCompiledRenderPipeline.STAGE_FRAGMENT);
+            } else {
+                enc.setTextureAndSampler(texture, sampler, index, MetalCompiledRenderPipeline.STAGE_FRAGMENT);
+            }
+        }
     }
 
     record TextureViewAndSampler(GpuTextureView textureView, GpuSampler sampler) {

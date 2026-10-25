@@ -91,6 +91,21 @@ class MetalGpuBuffer extends GpuBuffer {
         return duplicate.slice().order(this.storage.order());
     }
 
+    /**
+     * CPU view of a sub-range, or {@code null} when this buffer has no host
+     * storage. Used by the world bridge to read the engine's
+     * {@code DynamicTransforms}/{@code Projection} bytes for per-draw
+     * materialization; those buffers are shared (usage 130/136) so the view is
+     * valid without {@code USAGE_MAP_READ}.
+     */
+    @Nullable
+    ByteBuffer sliceStorageOrNull(final long offset, final long length) {
+        if (this.storage == null) {
+            return null;
+        }
+        return sliceStorage(offset, length);
+    }
+
     MemorySegment nativeHandle() {
         if (this.nativeHandle == null) {
             throw new IllegalStateException("Native Metal buffer is closed");
@@ -158,10 +173,6 @@ class MetalGpuBuffer extends GpuBuffer {
         ByteBuffer mapped = this.sliceStorage(offset, length);
         return new GpuBufferSlice.MappedView(this.slice(offset, length), mapped, () -> {
         });
-    }
-
-    public int getUsage() {
-        return this.usage();
     }
 
     private static boolean isCpuAccessible(@GpuBuffer.Usage final int usage) {

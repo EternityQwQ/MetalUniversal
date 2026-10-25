@@ -5,6 +5,7 @@ import com.mojang.blaze3d.textures.GpuTexture;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 
+import java.util.Arrays;
 import java.util.BitSet;
 import java.util.Objects;
 import java.util.Set;
@@ -33,6 +34,9 @@ final class IrisMetalPingPongTargets implements AutoCloseable {
     private final BitSet mipmappedTargets;
     private final BitSet mipmapsOnMain;
     private final BitSet mipmapsOnAlt;
+    private int[] widths;
+    private int[] heights;
+    /** Largest target extent; retained for uniform-size callers. Prefer {@link #width(int)}. */
     private int width;
     private int height;
     private boolean closed;
@@ -55,8 +59,31 @@ final class IrisMetalPingPongTargets implements AutoCloseable {
             final int height,
             final Set<Integer> mipmappedTargets
     ) {
+        this(device, labelPrefix, formats, uniform(formats.length, width),
+                uniform(formats.length, height), mipmappedTargets);
+    }
+
+    /**
+     * Per-target-size constructor used by {@code size.buffer} support: every
+     * logical target (and both of its ping-pong sides) gets its own extent and
+     * mip chain.
+     */
+    IrisMetalPingPongTargets(
+            final MetalDevice device,
+            final String labelPrefix,
+            final GpuFormat[] formats,
+            final int[] widths,
+            final int[] heights,
+            final Set<Integer> mipmappedTargets
+    ) {
         if (formats.length == 0) {
             throw new IllegalArgumentException("At least one logical target is required");
+        }
+        if (widths.length != formats.length || heights.length != formats.length) {
+            throw new IllegalArgumentException(
+                    "Target extent arrays must match the logical target count: "
+                            + widths.length + "/" + heights.length + " vs " + formats.length
+            );
         }
         this.device = device;
         this.labelPrefix = labelPrefix;
@@ -68,27 +95,37 @@ final class IrisMetalPingPongTargets implements AutoCloseable {
         );
         this.mipmapsOnMain = new BitSet(formats.length);
         this.mipmapsOnAlt = new BitSet(formats.length);
-        createTextures(width, height);
+        createTextures(widths, heights);
     }
 
-    private void createTextures(final int newWidth, final int newHeight) {
-        if (newWidth <= 0 || newHeight <= 0) {
-            throw new IllegalArgumentException("Target extent must be positive: " + newWidth + "x" + newHeight);
+    private void createTextures(final int[] newWidths, final int[] newHeights) {
+        checkExtents(newWidths, newHeights);
+        int largestWidth = 1;
+        int largestHeight = 1;
+        for (int index = 0; index < formats.length; index++) {
+            largestWidth = Math.max(largestWidth, newWidths[index]);
+            largestHeight = Math.max(largestHeight, newHeights[index]);
         }
-        this.width = newWidth;
-        this.height = newHeight;
+        this.widths = newWidths.clone();
+        this.heights = newHeights.clone();
+        this.width = largestWidth;
+        this.height = largestHeight;
         this.main = new MetalGpuTexture[formats.length];
         this.alt = new MetalGpuTexture[formats.length];
         this.mainViews = new MetalGpuTextureView[formats.length];
         this.altViews = new MetalGpuTextureView[formats.length];
         for (int index = 0; index < formats.length; index++) {
+            int targetWidth = newWidths[index];
+            int targetHeight = newHeights[index];
             int mipLevels = this.mipmappedTargets.get(index)
-                    ? fullMipLevelCount(newWidth, newHeight)
+                    ? fullMipLevelCount(targetWidth, targetHeight)
                     : 1;
             main[index] = (MetalGpuTexture) device.createTexture(
-                    labelPrefix + index + "-main", TEXTURE_USAGE, formats[index], newWidth, newHeight, 1, mipLevels);
+                    labelPrefix + index + "-main", TEXTURE_USAGE, formats[index],
+                    targetWidth, targetHeight, 1, mipLevels);
             alt[index] = (MetalGpuTexture) device.createTexture(
-                    labelPrefix + index + "-alt", TEXTURE_USAGE, formats[index], newWidth, newHeight, 1, mipLevels);
+                    labelPrefix + index + "-alt", TEXTURE_USAGE, formats[index],
+                    targetWidth, targetHeight, 1, mipLevels);
             mainViews[index] = new MetalGpuTextureView(main[index], 0, mipLevels);
             altViews[index] = new MetalGpuTextureView(alt[index], 0, mipLevels);
         }
@@ -102,12 +139,24 @@ final class IrisMetalPingPongTargets implements AutoCloseable {
         return formats[checkIndex(index)];
     }
 
+    /** Largest target extent; prefer {@link #width(int)} for a specific target. */
     int width() {
         return width;
     }
 
+    /** Largest target extent; prefer {@link #height(int)} for a specific target. */
     int height() {
         return height;
+    }
+
+    int width(final int index) {
+        ensureOpen();
+        return widths[checkIndex(index)];
+    }
+
+    int height(final int index) {
+        ensureOpen();
+        return heights[checkIndex(index)];
     }
 
     MetalGpuTexture readTexture(final int index) {
@@ -210,6 +259,28 @@ final class IrisMetalPingPongTargets implements AutoCloseable {
         return flipped.get(checkIndex(index));
     }
 
+    /**
+     * Probe-only ({@code -Dmetallum.perf}): which side of this pair a texture
+     * is, resolved by identity rather than by its label string. Returns
+     * {@code "main"}, {@code "alt"}, or {@code null} when the texture does not
+     * belong to this pair. Read-only: flipping state is never touched.
+     */
+    String sideOf(final GpuTexture texture) {
+        if (!MetalPerformanceProbe.ENABLED || texture == null) {
+            return null;
+        }
+        ensureOpen();
+        for (int index = 0; index < formats.length; index++) {
+            if (main[index] == texture) {
+                return "main";
+            }
+            if (alt[index] == texture) {
+                return "alt";
+            }
+        }
+        return null;
+    }
+
     boolean flippedAtLeastOnce(final int index) {
         return flippedAtLeastOnce.get(checkIndex(index));
     }
@@ -264,15 +335,43 @@ final class IrisMetalPingPongTargets implements AutoCloseable {
     }
 
     void resize(final int newWidth, final int newHeight) {
+        resize(uniform(formats.length, newWidth), uniform(formats.length, newHeight));
+    }
+
+    /** Per-target resize: each target is recreated at its own extent. */
+    void resize(final int[] newWidths, final int[] newHeights) {
         ensureOpen();
-        if (newWidth == width && newHeight == height) {
+        checkExtents(newWidths, newHeights);
+        if (Arrays.equals(newWidths, this.widths) && Arrays.equals(newHeights, this.heights)) {
             return;
         }
         releaseTextures();
         flipped.clear();
         flippedAtLeastOnce.clear();
         resetMipmaps();
-        createTextures(newWidth, newHeight);
+        createTextures(newWidths, newHeights);
+    }
+
+    private void checkExtents(final int[] newWidths, final int[] newHeights) {
+        if (newWidths.length != formats.length || newHeights.length != formats.length) {
+            throw new IllegalArgumentException(
+                    "Target extent arrays must match the logical target count: "
+                            + newWidths.length + "/" + newHeights.length + " vs " + formats.length
+            );
+        }
+        for (int index = 0; index < formats.length; index++) {
+            if (newWidths[index] <= 0 || newHeights[index] <= 0) {
+                throw new IllegalArgumentException(
+                        "Target extent must be positive: " + newWidths[index] + "x" + newHeights[index]
+                );
+            }
+        }
+    }
+
+    private static int[] uniform(final int count, final int value) {
+        int[] result = new int[count];
+        Arrays.fill(result, value);
+        return result;
     }
 
     private static BitSet validatedTargets(final Set<Integer> targets, final int targetCount) {

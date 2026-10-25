@@ -27,7 +27,7 @@ import java.util.function.Function;
  * <p>This mirrors the FFM pattern established by {@link MetalNativeBridge}: a
  * static initializer first ensures the bundled native library is loaded (via
  * {@link MetalNativeBridge#ensureGlslangLibraryConfigured()}, which is a no-op
- * on macOS and extracts/loads {@code libglslang.dylib} on iOS), obtains a
+ * on macOS and extracts/loads the bundled glslang dylibs on iOS), obtains a
  * {@link SymbolLookup}, and resolves every glslang downcall to a
  * {@link MethodHandle}. The one-shot process initialization
  * ({@code glslang_initialize_process}) is deferred to a lazy, idempotent method
@@ -41,8 +41,8 @@ import java.util.function.Function;
  *       temp directory, {@code System.load} each (dependencies first), and look
  *       the symbols up via {@link SymbolLookup#loaderLookup()}.</li>
  *   <li>iOS: {@link MetalNativeBridge#ensureGlslangLibraryConfigured()} extracts
- *       {@code /natives/ios/libglslang.dylib} to a writable directory and
- *       {@code System.load}s it (via Amethyst's hooked {@code dlopen}); a
+ *       the bundled glslang dylibs to a writable directory and
+ *       {@code System.load}s them (via Amethyst's hooked {@code dlopen}); a
  *       best-effort {@code System.loadLibrary("glslang")} handles the app
  *       bundle's {@code Frameworks/} deployment path. Symbols are then exposed
  *       through {@link SymbolLookup#loaderLookup()}.</li>
@@ -242,26 +242,6 @@ public final class GlslangBridge {
     /** Shared arena holding the upcall stub (kept alive for the JVM lifetime). */
     private static final Arena UPCALL_ARENA = Arena.ofShared();
 
-    /**
-     * Compatibility macros injected before the source when compiling raw
-     * shaderpack GLSL (Task 6.3: macro injection). These are normally supplied
-     * by Iris's TransformPatcher; defining them here lets the glslang frontend
-     * parse shaderpack sources that branch on them ({@code IS_IRIS},
-     * {@code MC_VERSION}, {@code MC_GLSL_VERSION}, ...).
-     */
-    private static final String COMPAT_PREAMBLE = String.join("\n",
-            "#define IS_IRIS 1",
-            "#define MC_VERSION 12111",
-            "#define MC_GLSL_VERSION 460",
-            "#define MC_GL_VERSION 460",
-            "#define MC_RENDER_QUALITY 1.0",
-            "#define MC_SHADOW_QUALITY 1.0",
-            "#define MC_NORMAL_MAP",
-            "#define MC_SPECULAR_MAP",
-            "#define METALLUM_GLSLANG_FRONTEND 1",
-            ""
-    );
-
     static {
         try {
             // Ensure the bundled glslang library is loaded BEFORE resolving any
@@ -368,7 +348,7 @@ public final class GlslangBridge {
      * injection) applied here:</b>
      * <ul>
      *   <li><b>Macro injection.</b> A compatibility preamble
-     *       ({@link #COMPAT_PREAMBLE}) is prepended so raw shaderpack sources
+     *       ({@link GlslangSourcePrep}) is prepended so raw shaderpack sources
      *       that branch on {@code IS_IRIS}/{@code MC_VERSION}/... parse. In the
      *       real Iris integration path Iris's TransformPatcher supplies these;
      *       the preamble is a safety net for partially-patched / raw sources.</li>
@@ -413,8 +393,7 @@ public final class GlslangBridge {
         // Strip any #version directive — we force 460 via force_default_version_and_profile,
         // and #version must be the first directive if present. Injecting the
         // compatibility preamble before the source would otherwise violate that.
-        final String stripped = stripVersionDirective(source);
-        final String fullSource = buildSourceWithDefines(COMPAT_PREAMBLE + stripped, defines);
+        final String fullSource = GlslangSourcePrep.buildFullSource(source, defines);
 
         synchronized (COMPILE_LOCK) {
             INCLUDE_RESOLVER.set(includeResolver);
@@ -580,11 +559,6 @@ public final class GlslangBridge {
             this.infoLog = infoLog;
         }
 
-        /** @return the glslang info log captured at the point of failure, or {@code null}. */
-        public String getInfoLog() {
-            return infoLog;
-        }
-
         private static String appendLog(String message, String infoLog) {
             if (infoLog == null || infoLog.isEmpty()) {
                 return message;
@@ -687,69 +661,6 @@ public final class GlslangBridge {
     }
 
     // --- helpers ---
-
-    /**
-     * Removes the leading {@code #version} directive (and any preceding
-     * comments/blank lines before it) from the source. We force version 460
-     * via {@code force_default_version_and_profile}, so the {@code #version}
-     * directive is redundant — and stripping it lets us inject the
-     * {@link #COMPAT_PREAMBLE} before the source without violating the GLSL
-     * rule that {@code #version} must be the first directive.
-     *
-     * <p>If no {@code #version} directive is found, the source is returned
-     * unchanged.
-     */
-    private static String stripVersionDirective(String source) {
-        // Find the #version line in the leading run of comments / whitespace.
-        String[] lines = source.split("\\R", -1);
-        int versionLine = -1;
-        for (int i = 0; i < lines.length; i++) {
-            String trimmed = lines[i].trim();
-            if (trimmed.startsWith("#version")) {
-                versionLine = i;
-                break;
-            }
-            // Allow leading comments and blank lines before #version.
-            if (!trimmed.isEmpty() && !trimmed.startsWith("//") && !trimmed.startsWith("/*")) {
-                // Non-comment, non-blank, non-#version line — #version won't
-                // appear after real code, stop looking.
-                break;
-            }
-        }
-        if (versionLine < 0) {
-            return source;
-        }
-        StringBuilder sb = new StringBuilder();
-        boolean first = true;
-        for (int i = 0; i < lines.length; i++) {
-            if (i == versionLine) continue;
-            if (!first) sb.append('\n');
-            sb.append(lines[i]);
-            first = false;
-        }
-        return sb.toString();
-    }
-
-    private static String buildSourceWithDefines(String source, String defines) {
-        if (defines == null || defines.isBlank()) {
-            return source;
-        }
-        StringBuilder sb = new StringBuilder();
-        for (String line : defines.split("\\R")) {
-            String trimmed = line.trim();
-            if (trimmed.isEmpty()) {
-                continue;
-            }
-            if (trimmed.startsWith("#")) {
-                sb.append(trimmed).append('\n');
-            } else {
-                sb.append("#define ").append(trimmed).append('\n');
-            }
-        }
-        sb.append("#line 1\n");
-        sb.append(source);
-        return sb.toString();
-    }
 
     private static String readShaderLog(MemorySegment shader) {
         if (isNull(shader)) {

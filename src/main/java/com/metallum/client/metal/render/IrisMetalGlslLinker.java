@@ -18,6 +18,17 @@ import java.util.regex.Pattern;
 public final class IrisMetalGlslLinker {
     public static final String UNIFORM_BLOCK_NAME = "MetallumIrisUniforms";
     public static final String SODIUM_PUSH_CONSTANT_BLOCK_NAME = "MetallumSodiumPushConstants";
+    /**
+     * Vertex-stage member that carries the engine's zero-to-one projection when
+     * {@link MetalDebugSwitches#VERTEX_ENGINE_PROJECTION} is on. The same
+     * program keeps {@code gbufferProjection} (OpenGL [-1,1] pack space) for
+     * its fragment stage.
+     */
+    static final String VERTEX_ENGINE_PROJECTION_UNIFORM = "metallum_irisVertexEngineProjection";
+
+    private static final Pattern VERTEX_PACK_PROJECTION = Pattern.compile(
+            "\\b(?:gbufferProjection|iris_ProjectionMatrix)\\b"
+    );
 
     private static final Pattern UNIFORM_STATEMENT =
             Pattern.compile("(?m)^[ \\t]*uniform\\b([^;{}]*);");
@@ -32,6 +43,25 @@ public final class IrisMetalGlslLinker {
                     + "|unsigned|class|constexpr|nullptr|throw|try|catch|kernel|device|constant|thread"
                     + "|threadgroup|half|sampler)\\b"
     );
+    /**
+     * Compute opaque declarations. Unlike {@link #UNIFORM_STATEMENT} this also
+     * matches qualifiers before {@code uniform} ({@code writeonly uniform
+     * image3D ...}) because storage images require them.
+     */
+    private static final Pattern COMPUTE_OPAQUE_DECLARATION = Pattern.compile(
+            "(?m)^([ \\t]*)(layout\\s*\\([^)]*\\)\\s*)?"
+                    + "((?:(?:readonly|writeonly|coherent|volatile|restrict|highp|mediump|lowp)\\s+)*)"
+                    + "uniform\\s+([A-Za-z_]\\w*)\\s+([^;{}]+);"
+    );
+    /** Compute SSBO block headers ({@code [layout(...)] buffer Name {}). */
+    private static final Pattern COMPUTE_BUFFER_BLOCK = Pattern.compile(
+            "(?m)^([ \\t]*)(layout\\s*\\([^)]*\\)\\s*)?"
+                    + "((?:(?:readonly|writeonly|coherent|volatile|restrict)\\s+)*)"
+                    + "buffer\\s+([A-Za-z_]\\w*)\\s*\\{"
+    );
+    private static final Pattern BINDING_ARGUMENT = Pattern.compile("\\bbinding\\s*=\\s*(\\d+)");
+    private static final Pattern VERSION_DIRECTIVE =
+            Pattern.compile("(?m)^[ \\t]*#version\\b[^\\r\\n]*");
     private static final Set<String> UNIFORM_QUALIFIERS = Set.of(
             "lowp", "mediump", "highp", "coherent", "volatile", "restrict", "readonly", "writeonly"
     );
@@ -96,7 +126,7 @@ public final class IrisMetalGlslLinker {
         }
 
         try {
-            LooseExtraction vertex = extractLooseUniforms(normalize(program.vertexSource()));
+            LooseExtraction vertex = extractLooseUniforms(normalize(vertexProjectionSource(program.vertexSource())));
             LooseExtraction fragment = extractLooseUniforms(normalize(program.fragmentSource()));
 
             List<LooseUniform> vertexPack = sodium
@@ -111,6 +141,15 @@ public final class IrisMetalGlslLinker {
             String vertexSource = vertex.body();
             String fragmentSource = fragment.body();
             if (!shared.isEmpty()) {
+                // A block member may be declared as a uniform by only one
+                // stage; in the other stage the same identifier can be a
+                // legitimate stage-local symbol (Bliss's deferred vertex
+                // computes its own `sunVec` while the fragment declares
+                // `uniform vec3 sunVec`). Emitting the shared block into both
+                // stages would collide with that symbol, so rename the
+                // stage-local references before the block is inserted.
+                vertexSource = renameStageLocalCollisions(vertexSource, shared, vertex.uniforms());
+                fragmentSource = renameStageLocalCollisions(fragmentSource, shared, fragment.uniforms());
                 String block = renderUniformBlock(shared);
                 vertexSource = insertBlock(vertexSource, block);
                 fragmentSource = insertBlock(fragmentSource, block);
@@ -152,6 +191,26 @@ public final class IrisMetalGlslLinker {
 
     private static String normalize(final String source) {
         return HOSTILE_IDENTIFIER.matcher(stripComments(source)).replaceAll("metallum_id_$1");
+    }
+
+    /**
+     * Renames the vertex stage's {@code gbufferProjection} to the dedicated
+     * engine-space member. The main pass rasterizes with the engine's
+     * zero-to-one projection (Sodium {@code u_ProjectionMatrix}), while packs
+     * receive {@code gbufferProjection} in Iris's OpenGL [-1,1] space for
+     * fragment reconstruction. A vertex shader that rewrites {@code gl_Position}
+     * from {@code gbufferProjection} (Mellow's WAVE_LEAVES branch) would
+     * otherwise store depth {@code 2d-1} instead of {@code d}, letting waving
+     * foliage occlude blocks out to about twice its own distance. Fragment-stage
+     * pack math keeps OpenGL space, mirroring the existing
+     * {@code iris_ProjMat} (engine) / {@code iris_ProjMatInverse} (pack) split.
+     * Gated by {@link MetalDebugSwitches#VERTEX_ENGINE_PROJECTION}.
+     */
+    private static String vertexProjectionSource(final String source) {
+        if (!MetalDebugSwitches.VERTEX_ENGINE_PROJECTION) {
+            return source;
+        }
+        return VERTEX_PACK_PROJECTION.matcher(source).replaceAll(VERTEX_ENGINE_PROJECTION_UNIFORM);
     }
 
     private static LooseExtraction extractLooseUniforms(final String source) {
@@ -276,13 +335,207 @@ public final class IrisMetalGlslLinker {
         return Integer.parseInt(matcher.group(1));
     }
 
+    /**
+     * Lowers a shaderpack compute ({@code .csh}) program for the Vulkan/SPIR-V
+     * path used by {@link MetalComputePipeline}.
+     *
+     * <p>Upstream {@code TransformPatcher.patchCompute} emits GL-style GLSL:
+     * loose uniforms outside any block and opaque declarations without explicit
+     * bindings. Vulkan (shaderc/glslang) rejects both, which is why Solas
+     * V3.7b's {@code shadowcomp} failed to compile on device. This mirrors the
+     * raster pipeline: the version is normalized to {@code 460 core}, loose
+     * non-opaque uniforms are hoisted into a std140
+     * {@value #UNIFORM_BLOCK_NAME} block with an explicit binding, and sampled
+     * images / storage images / SSBOs receive explicit {@code layout(binding=N)}
+     * declarations. Existing bindings are preserved (an SSBO's number is the
+     * key into the pack's {@code bufferObject} definitions); missing ones are
+     * assigned free indices. The returned layout is registered with
+     * {@link IrisMetalUniformValues}, and the block binding is bound at
+     * dispatch by {@code IrisMetalExecutionGraph#bindCompute}.
+     */
+    public static LinkedComputeProgram linkCompute(final String name, final String source) {
+        Objects.requireNonNull(name, "name");
+        Objects.requireNonNull(source, "source");
+        try {
+            String lowered = normalizeComputeVersion(normalize(source));
+            ComputeResources resources = injectComputeBindings(lowered);
+            LooseExtraction extraction = extractLooseUniforms(resources.source());
+            List<UniformMember> layout = computeStd140Layout(name, extraction.uniforms());
+            String glsl = extraction.body();
+            if (!layout.isEmpty()) {
+                glsl = insertBlock(glsl, renderUniformBlock(extraction.uniforms(), resources.uniformBinding()));
+            }
+            int blockSize = layout.isEmpty()
+                    ? 0
+                    : alignUp(layout.getLast().offset() + layout.getLast().byteSize(), 16);
+            return new LinkedComputeProgram(
+                    name,
+                    glsl,
+                    layout,
+                    blockSize,
+                    layout.isEmpty() ? -1 : resources.uniformBinding(),
+                    resources.resourceNames()
+            );
+        } catch (LinkException exception) {
+            throw exception;
+        } catch (RuntimeException exception) {
+            throw new LinkException(name, String.valueOf(exception.getMessage()), exception);
+        }
+    }
+
+    private static String normalizeComputeVersion(final String source) {
+        Matcher matcher = VERSION_DIRECTIVE.matcher(source);
+        if (matcher.find()) {
+            return matcher.replaceFirst("#version 460 core");
+        }
+        return "#version 460 core\n" + source;
+    }
+
+    /**
+     * Assigns explicit bindings to compute resources. Declarations that already
+     * carry {@code layout(binding=N)} keep N; everything else takes the next
+     * free index in the shared resource set. The std140 uniform block takes the
+     * first buffer-class index that stays unused by SSBOs.
+     */
+    private static ComputeResources injectComputeBindings(final String source) {
+        Set<Integer> used = new LinkedHashSet<>();
+        List<String> resourceNames = new ArrayList<>();
+
+        Matcher bufferMatcher = COMPUTE_BUFFER_BLOCK.matcher(source);
+        StringBuilder withBuffers = new StringBuilder(source.length());
+        int last = 0;
+        while (bufferMatcher.find()) {
+            int binding = existingBinding(bufferMatcher.group(2));
+            if (binding < 0) {
+                binding = nextFree(used);
+            }
+            used.add(binding);
+            resourceNames.add(bufferMatcher.group(4));
+            withBuffers.append(source, last, bufferMatcher.start());
+            withBuffers.append(bufferMatcher.group(1))
+                    .append("layout(binding=").append(binding).append(") ")
+                    .append(bufferMatcher.group(3))
+                    .append("buffer ").append(bufferMatcher.group(4)).append(" {");
+            last = bufferMatcher.end();
+        }
+        withBuffers.append(source, last, source.length());
+
+        String text = withBuffers.toString();
+        Matcher opaqueMatcher = COMPUTE_OPAQUE_DECLARATION.matcher(text);
+        StringBuilder lowered = new StringBuilder(text.length());
+        last = 0;
+        while (opaqueMatcher.find()) {
+            String type = opaqueMatcher.group(4);
+            if (!OPAQUE_TYPE.matcher(type).matches()) {
+                continue;
+            }
+            int binding = existingBinding(opaqueMatcher.group(2));
+            if (binding < 0) {
+                binding = nextFree(used);
+            }
+            used.add(binding);
+            lowered.append(text, last, opaqueMatcher.start());
+            List<String> declarators = splitTopLevel(opaqueMatcher.group(5));
+            for (int index = 0; index < declarators.size(); index++) {
+                String declarator = declarators.get(index).trim();
+                if (index > 0) {
+                    binding = nextFree(used);
+                    used.add(binding);
+                    lowered.append("\n").append(opaqueMatcher.group(1));
+                } else {
+                    lowered.append(opaqueMatcher.group(1));
+                }
+                lowered.append("layout(binding=").append(binding).append(") ")
+                        .append(opaqueMatcher.group(3))
+                        .append("uniform ").append(type).append(' ')
+                        .append(declarator).append(';');
+                resourceNames.add(declaratorName(declarator));
+            }
+            last = opaqueMatcher.end();
+        }
+        lowered.append(text, last, text.length());
+
+        return new ComputeResources(lowered.toString(), nextFree(used), List.copyOf(resourceNames));
+    }
+
+    private static String declaratorName(final String declarator) {
+        Matcher matcher = Pattern.compile("^([A-Za-z_]\\w*)").matcher(declarator);
+        if (!matcher.find()) {
+            throw new IllegalStateException("cannot parse compute resource declarator '" + declarator + "'");
+        }
+        return matcher.group(1);
+    }
+
+    private static int existingBinding(final String layout) {
+        if (layout == null) {
+            return -1;
+        }
+        Matcher matcher = BINDING_ARGUMENT.matcher(layout);
+        return matcher.find() ? Integer.parseInt(matcher.group(1)) : -1;
+    }
+
+    private static int nextFree(final Set<Integer> used) {
+        int candidate = 0;
+        while (used.contains(candidate)) {
+            candidate++;
+        }
+        return candidate;
+    }
+
     private static String renderUniformBlock(final List<LooseUniform> uniforms) {
-        StringBuilder block = new StringBuilder("layout(std140) uniform ")
-                .append(UNIFORM_BLOCK_NAME).append(" {\n");
+        return renderUniformBlock(uniforms, -1);
+    }
+
+    private static String renderUniformBlock(final List<LooseUniform> uniforms, final int binding) {
+        StringBuilder block = new StringBuilder("layout(std140");
+        if (binding >= 0) {
+            block.append(", binding=").append(binding);
+        }
+        block.append(") uniform ").append(UNIFORM_BLOCK_NAME).append(" {\n");
         for (LooseUniform uniform : uniforms) {
             block.append("    ").append(uniform.declaration()).append(";\n");
         }
         return block.append("};\n").toString();
+    }
+
+    /** Prefix for stage-local identifiers renamed to avoid block-member collisions. */
+    private static final String STAGE_LOCAL_PREFIX = "metallum_local_";
+
+    /**
+     * Renames stage-local identifiers that would collide with a hoisted
+     * {@link #UNIFORM_BLOCK_NAME} member once the shared block is emitted into
+     * this stage. Only names the stage did not declare as its own uniform are
+     * touched: there, every reference belongs to the stage's own symbol while
+     * the other stage's declaration owns the block member name. GLSL (and
+     * glslang) reject a block member and a variable of the same name in one
+     * translation unit.
+     */
+    private static String renameStageLocalCollisions(
+            final String body,
+            final List<LooseUniform> shared,
+            final List<LooseUniform> stageUniforms
+    ) {
+        Set<String> declared = new LinkedHashSet<>();
+        for (LooseUniform uniform : stageUniforms) {
+            declared.add(uniform.name());
+        }
+        String result = body;
+        for (LooseUniform member : shared) {
+            String name = member.name();
+            if (declared.contains(name)) {
+                continue;
+            }
+            // Skip qualified member accesses (`instance.name`): those belong to
+            // another block and never collide with a global block member.
+            Pattern reference = Pattern.compile("(?<![\\w.])" + Pattern.quote(name) + "\\b");
+            if (!reference.matcher(result).find()) {
+                continue;
+            }
+            result = reference.matcher(result).replaceAll(
+                    Matcher.quoteReplacement(STAGE_LOCAL_PREFIX + name)
+            );
+        }
+        return result;
     }
 
     private static String insertBlock(final String source, final String block) {
@@ -427,6 +680,28 @@ public final class IrisMetalGlslLinker {
     }
 
     private record Std140Type(int alignment, int byteSize) {
+    }
+
+    /** Lowered compute source plus its hoisted-uniform block metadata. */
+    private record ComputeResources(String source, int uniformBinding, List<String> resourceNames) {
+    }
+
+    /**
+     * A compute program lowered for the Vulkan/SPIR-V path:
+     * {@code uniformBinding} is the {@code layout(binding=N)} of the hoisted
+     * std140 {@value IrisMetalGlslLinker#UNIFORM_BLOCK_NAME} block
+     * ({@code -1} when the program declares no loose uniforms), and
+     * {@code resourceNames} lists the sampled images / storage images / SSBOs
+     * in binding assignment order (diagnostics and gates).
+     */
+    public record LinkedComputeProgram(
+            String name,
+            String glsl,
+            List<UniformMember> uniformLayout,
+            int uniformBlockSize,
+            int uniformBinding,
+            List<String> resourceNames
+    ) {
     }
 
     public record UniformMember(

@@ -192,6 +192,16 @@ final class MetalGpuTexture extends GpuTexture {
         return this.irisSyntheticId;
     }
 
+    /**
+     * Iris marks GL textures whose PBR format requires non-linear mip filtering;
+     * in 1.11.2 the flag is only recorded on {@code GlTexture} and never read,
+     * so this no-op preserves behaviour while avoiding the mixin default
+     * ({@code AssertionError: Why.}) that a Metal texture would otherwise hit
+     * via {@code TextureFormat.setupTextureParameters}.
+     */
+    public void iris$markMipmapNonLinear() {
+    }
+
     private static long toMtlTextureUsage(@GpuTexture.Usage final int usage) {
         long result = 0L;
         if ((usage & GpuTexture.USAGE_TEXTURE_BINDING) != 0 || (usage & GpuTexture.USAGE_COPY_DST) != 0 || (usage & GpuTexture.USAGE_COPY_SRC) != 0) {

@@ -140,6 +140,8 @@ final class IrisMetalProgramFrontendTest {
         assertUniqueBindings(result.vertexMsl(), "sampler");
         assertUniqueBindings(result.fragmentMsl(), "texture");
         assertUniqueBindings(result.fragmentMsl(), "sampler");
+        assertSamplerIndicesWithinMetalLimit(result.vertexMsl(), "vertex");
+        assertSamplerIndicesWithinMetalLimit(result.fragmentMsl(), "fragment");
         if (program.uniformBlockNames().contains(IrisMetalGlslLinker.UNIFORM_BLOCK_NAME)) {
             assertTrue(
                     resourceBinding(result.vertexMsl(), IrisMetalGlslLinker.UNIFORM_BLOCK_NAME, "buffer")
@@ -158,6 +160,21 @@ final class IrisMetalProgramFrontendTest {
             unique.add(Integer.parseInt(matcher.group(1)));
         }
         assertTrue(unique.size() == count, kind + " bindings collide in generated MSL");
+    }
+
+    /**
+     * Metal rejects {@code [[sampler(N)]]} for {@code N > 15}; the shaderpack
+     * path must keep every per-stage sampler attribute inside that range.
+     */
+    private static void assertSamplerIndicesWithinMetalLimit(final String msl, final String stage) {
+        Matcher matcher = Pattern.compile("\\[\\[sampler\\((\\d+)\\)]]").matcher(msl);
+        while (matcher.find()) {
+            int index = Integer.parseInt(matcher.group(1));
+            assertTrue(
+                    index < 16,
+                    stage + " MSL emits out-of-range [[sampler(" + index + ")]]"
+            );
+        }
     }
 
     private static int resourceBinding(final String msl, final String type, final String kind) {
